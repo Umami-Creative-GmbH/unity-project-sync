@@ -4,14 +4,23 @@ import { cn } from "@/lib/utils";
 
 /**
  * An absolute path that truncates at the *start* (the end of a path is usually what matters),
- * with a tooltip showing the full path.
+ * with a tooltip showing the full path. `focusable={false}` drops it from the tab order (when the
+ * full path is announced some other way, e.g. a row description); hovering still shows the tooltip.
  */
-export function AbsolutePath({ path, className }: { path: string; className?: string }) {
+export function AbsolutePath({
+  path,
+  className,
+  focusable = true,
+}: {
+  path: string;
+  className?: string;
+  focusable?: boolean;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
-          tabIndex={0}
+          tabIndex={focusable ? 0 : -1}
           className={cn(
             "min-w-0 truncate text-left font-mono text-xs [direction:rtl] outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-sm",
             className,

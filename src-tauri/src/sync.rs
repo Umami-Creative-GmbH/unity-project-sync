@@ -427,6 +427,7 @@ fn reporter(
             done_files,
             total_files: totals.files,
             bytes_per_sec: byte_rate.value(),
+            cost_per_sec: if warm { rate } else { 0.0 },
             eta_secs,
             elapsed_ms: started.elapsed().as_millis() as u64,
             current_file,

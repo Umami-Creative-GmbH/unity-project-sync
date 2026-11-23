@@ -1,38 +1,18 @@
+// Reusable pieces of a scan plan preview: stat tiles, warnings panel and the filterable entry list.
 import { useDeferredValue, useMemo, useState } from "react";
-import {
-  IconArrowLeft,
-  IconChevronDown,
-  IconCircleCheck,
-  IconFilter,
-  IconPlayerPlay,
-  IconRefresh,
-  IconAlertTriangle,
-  IconTrash,
-} from "@tabler/icons-react";
+import { IconAlertTriangle, IconChevronDown, IconCircleCheck, IconFilter } from "@tabler/icons-react";
 
 import { ACTION_META, REASON_LABEL } from "@/components/plan-meta";
 import { RelativePath } from "@/components/path-text";
 import { tone, toneText, type Tone } from "@/components/tone";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatBytes, formatCount, formatDuration, plural } from "@/lib/format";
-import type { PlanAction, PlanEntry, PlanSummary } from "@/lib/types";
+import { formatBytes, formatCount, plural } from "@/lib/format";
+import type { CountBytes, PlanAction, PlanEntry, PlanSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const MAX_ROWS = 500;
@@ -40,128 +20,59 @@ const MAX_ROWS = 500;
 type Filter = PlanAction | "all";
 const FILTERS: Filter[] = ["all", "copy", "update", "verify", "delete"];
 
-interface PlanPreviewProps {
-  plan: PlanSummary;
-  onBack: () => void;
-  onStart: () => void;
-  onRescan: () => void;
+/** Anything with plan-like totals: one PlanSummary or the sum of several. */
+export interface PlanCounts {
+  copy: CountBytes;
+  update: CountBytes;
+  verify: CountBytes;
+  delete: CountBytes & { dirs: number };
+  unchanged: CountBytes;
 }
 
-export function PlanPreview({ plan, onBack, onStart, onRescan }: PlanPreviewProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const nothingToDo = plan.totalEntries === 0;
-  const deleteCount = plan.delete.files + plan.delete.dirs;
-  const transferFiles = plan.copy.files + plan.update.files + plan.verify.files;
-
-  const handleStart = () => {
-    if (deleteCount > 0) setConfirmOpen(true);
-    else onStart();
-  };
-
+/** New / Changed / To verify / Delete / Unchanged tiles. */
+export function PlanStatTiles({ counts }: { counts: PlanCounts }) {
   return (
-    <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        <StatTile action="copy" files={plan.copy.files} bytes={plan.copy.bytes} />
-        <StatTile action="update" files={plan.update.files} bytes={plan.update.bytes} />
-        <StatTile action="verify" files={plan.verify.files} bytes={plan.verify.bytes} />
-        <StatTile
-          action="delete"
-          files={plan.delete.files}
-          bytes={plan.delete.bytes}
-          extra={plan.delete.dirs > 0 ? plural(plan.delete.dirs, "folder") : undefined}
-        />
-        <StatTile
-          action="unchanged"
-          files={plan.unchanged.files}
-          bytes={plan.unchanged.bytes}
-          className="col-span-2 sm:col-span-1"
-        />
-      </div>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <StatTile action="copy" files={counts.copy.files} bytes={counts.copy.bytes} />
+      <StatTile action="update" files={counts.update.files} bytes={counts.update.bytes} />
+      <StatTile action="verify" files={counts.verify.files} bytes={counts.verify.bytes} />
+      <StatTile
+        action="delete"
+        files={counts.delete.files}
+        bytes={counts.delete.bytes}
+        extra={counts.delete.dirs > 0 ? plural(counts.delete.dirs, "folder") : undefined}
+      />
+      <StatTile
+        action="unchanged"
+        files={counts.unchanged.files}
+        bytes={counts.unchanged.bytes}
+        className="col-span-2 sm:col-span-1"
+      />
+    </div>
+  );
+}
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-        <span>
-          {plan.verify.files > 0 ? "Up to " : ""}
-          <span className="font-medium text-foreground">{formatBytes(plan.totalBytes)}</span> to transfer
-          {transferFiles > 0 && <> in {plural(transferFiles, "file")}</>}
-        </span>
-        <span>Scanned in {formatDuration(plan.scanMs)}</span>
+/** Shown instead of the entry list when a plan has nothing to do. */
+export function AlreadyInSync({ unchangedFiles, className }: { unchangedFiles: number; className?: string }) {
+  return (
+    <div className={cn("flex flex-col items-center gap-2 py-6 text-center", className)}>
+      <div className={cn("flex size-10 items-center justify-center rounded-full", tone.success)}>
+        <IconCircleCheck className="size-5" />
       </div>
+      <h3 className="text-sm font-medium">Already in sync</h3>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        All {plural(unchangedFiles, "file")} in the scope match the source. There is nothing to copy or delete.
+      </p>
+    </div>
+  );
+}
 
+/** Warnings panel + entry list (or "already in sync") of one plan. */
+export function PlanDetails({ plan }: { plan: PlanSummary }) {
+  return (
+    <div className="flex flex-col gap-3">
       {plan.warnings.length > 0 && <WarningsPanel warnings={plan.warnings} />}
-
-      {nothingToDo ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
-            <div className={cn("flex size-12 items-center justify-center rounded-full", tone.success)}>
-              <IconCircleCheck className="size-6" />
-            </div>
-            <h2 className="text-base font-medium">Already in sync</h2>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              All {plural(plan.unchanged.files, "file")} in the scope match the source. There is nothing to copy or delete.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <EntryList plan={plan} />
-      )}
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" onClick={onBack}>
-          <IconArrowLeft data-icon="inline-start" />
-          Back
-        </Button>
-        {nothingToDo ? (
-          <Button variant="outline" onClick={onRescan}>
-            <IconRefresh data-icon="inline-start" />
-            Scan again
-          </Button>
-        ) : (
-          <Button
-            size="lg"
-            onClick={handleStart}
-            aria-label={deleteCount > 0 ? `Start sync, including ${formatCount(deleteCount)} deletions` : "Start sync"}
-          >
-            <IconPlayerPlay data-icon="inline-start" />
-            Start sync
-            {deleteCount > 0 && (
-              <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-destructive px-1.5 py-px text-[0.7rem] font-medium text-white">
-                <IconTrash className="size-3" />
-                {formatCount(deleteCount)}
-              </span>
-            )}
-          </Button>
-        )}
-      </div>
-
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogMedia className={tone.destructive}>
-              <IconTrash />
-            </AlertDialogMedia>
-            <AlertDialogTitle>Delete files from target?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {plural(plan.delete.files, "file")} and {plural(plan.delete.dirs, "folder")} will be deleted from the
-              target because they don't exist in the source. This can't be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="truncate rounded-md bg-muted px-2.5 py-1.5 font-mono text-xs" title={plan.target}>
-            {plan.target}
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                setConfirmOpen(false);
-                onStart();
-              }}
-            >
-              Delete &amp; sync
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {plan.totalEntries === 0 ? <AlreadyInSync unchangedFiles={plan.unchanged.files} /> : <PlanEntryList plan={plan} />}
     </div>
   );
 }
@@ -224,7 +135,8 @@ export function WarningsPanel({ warnings }: { warnings: string[] }) {
   );
 }
 
-function EntryList({ plan }: { plan: PlanSummary }) {
+/** Filterable list of a plan's entries (tabs per action + path filter). */
+export function PlanEntryList({ plan }: { plan: PlanSummary }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -269,10 +181,11 @@ function EntryList({ plan }: { plan: PlanSummary }) {
   }, [plan.entries, filter, deferredQuery]);
 
   return (
-    <Card size="sm" className="gap-0 py-0">
-      <div className="flex flex-col gap-2 border-b p-3 sm:flex-row sm:items-center">
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)} className="min-w-0">
-          <TabsList className="max-w-full overflow-x-auto">
+    // A size container: the list is also nested (narrower) inside the batch preview and report.
+    <Card size="sm" className="@container gap-0 py-0">
+      <div className="flex flex-col gap-2 border-b p-3 @2xl:flex-row @2xl:items-center">
+        <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)} className="max-w-full min-w-0 @2xl:shrink-0">
+          <TabsList className="max-w-full overflow-x-auto overflow-y-hidden [scrollbar-width:thin]">
             {FILTERS.map((f) => (
               <TabsTrigger key={f} value={f} className="gap-1 px-2 text-xs">
                 {f === "all" ? "All" : ACTION_META[f].label}

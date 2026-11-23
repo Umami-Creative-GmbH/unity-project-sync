@@ -14,6 +14,8 @@ pub fn inspect_project(path: &str) -> ProjectInfo {
         is_unity_project: false,
         unity_version: None,
         root_dirs: Vec::new(),
+        // Also for missing folders: resolved through their nearest existing ancestor.
+        compare_path: crate::scan::comparison_path(path),
     };
     if path.trim().is_empty() || !root.is_dir() {
         return info;

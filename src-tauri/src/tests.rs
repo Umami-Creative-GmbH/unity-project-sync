@@ -819,6 +819,53 @@ fn symlinks_are_skipped_and_never_followed() {
 }
 
 #[test]
+fn comparison_path_resolves_aliases() {
+    use crate::scan::comparison_path;
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("Real");
+    fs::create_dir_all(real.join("Sub")).unwrap();
+    let real_cmp = comparison_path(real.to_str().unwrap());
+    assert!(!real_cmp.is_empty());
+    assert_eq!(comparison_path(""), "");
+    assert_eq!(comparison_path("   "), "");
+
+    // `..` segments and (missing) children resolve through the nearest existing ancestor.
+    let dotted = real.join("Sub").join("..");
+    assert_eq!(comparison_path(dotted.to_str().unwrap()), real_cmp);
+    let missing = comparison_path(real.join("NotYet").join("Deeper").to_str().unwrap());
+    assert!(
+        Path::new(&missing).starts_with(Path::new(&real_cmp)),
+        "{missing}"
+    );
+    assert!(missing.ends_with("deeper") || missing.ends_with("Deeper"));
+
+    #[cfg(windows)]
+    {
+        // No verbatim prefix, lowercase, and the `\\?\` spelling compares equal.
+        assert!(!real_cmp.starts_with(r"\\?\"));
+        assert_eq!(real_cmp, real_cmp.to_lowercase());
+        let verbatim = format!(r"\\?\{}", real.to_str().unwrap());
+        assert_eq!(comparison_path(&verbatim), real_cmp);
+        let upper = real.to_str().unwrap().to_uppercase();
+        assert_eq!(comparison_path(&upper), real_cmp);
+    }
+
+    // A junction/symlink to the folder (and a missing child of it) compares equal to the real one.
+    let alias = dir.path().join("Alias");
+    if !dir_link(&real, &alias) {
+        eprintln!("link creation not permitted here; skipping the link part");
+        return;
+    }
+    assert_eq!(comparison_path(alias.to_str().unwrap()), real_cmp);
+    assert_eq!(
+        comparison_path(alias.join("NotYet").join("Deeper").to_str().unwrap()),
+        missing
+    );
+    let info = crate::project::inspect_project(alias.to_str().unwrap());
+    assert_eq!(info.compare_path, real_cmp);
+}
+
+#[test]
 fn validation_errors() {
     let env = Env::new();
     write(&env.s("Assets/a.txt"), b"a", T0);
@@ -1306,8 +1353,10 @@ fn wire_payloads_match_types_ts() {
             "isUnityProject",
             "unityVersion",
             "rootDirs",
+            "comparePath",
         ],
     );
+    assert_eq!(info["comparePath"], "");
     assert!(info["unityVersion"].is_null());
     let progress = SyncProgress {
         phase: crate::model::SyncPhase::Finalizing,
@@ -1316,6 +1365,7 @@ fn wire_payloads_match_types_ts() {
         done_files: 0,
         total_files: 0,
         bytes_per_sec: 0.0,
+        cost_per_sec: 0.0,
         eta_secs: None,
         elapsed_ms: 0,
         current_file: None,
@@ -1333,6 +1383,7 @@ fn wire_payloads_match_types_ts() {
             "doneFiles",
             "totalFiles",
             "bytesPerSec",
+            "costPerSec",
             "etaSecs",
             "elapsedMs",
             "currentFile",

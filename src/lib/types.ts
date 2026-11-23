@@ -14,6 +14,11 @@ export interface ProjectInfo {
   unityVersion: string | null;
   /** Names of top-level directories, sorted case-insensitively. */
   rootDirs: string[];
+  /**
+   * Canonical form of `path` for comparing folders across projects (junctions, symlinks, mapped
+   * drives resolved; no `\\?\` prefix; lowercase on Windows). Empty for a blank path.
+   */
+  comparePath: string;
 }
 
 /** What part of the project gets mirrored. Anything outside is never read or touched in the target. */
@@ -74,6 +79,8 @@ export interface PlanSummary {
 
 /** Payload of the `scan-progress` event. */
 export interface ScanProgress {
+  /** The scan this event belongs to (events may arrive after the command returned). */
+  opId: OperationId;
   phase: "source" | "target" | "compare";
   /** Entries visited so far in the current phase. */
   entries: number;
@@ -83,6 +90,8 @@ export type SyncPhase = "deleting" | "copying" | "finalizing";
 
 /** Payload of the `sync-progress` event (emitted ~10x per second while `run_sync` runs). */
 export interface SyncProgress {
+  /** The sync this event belongs to (events may arrive after the command returned). */
+  opId: OperationId;
   phase: SyncPhase;
   doneBytes: number;
   totalBytes: number;
@@ -90,6 +99,11 @@ export interface SyncProgress {
   totalFiles: number;
   /** Smoothed throughput. */
   bytesPerSec: number;
+  /**
+   * Smoothed copy-phase rate in cost units per second (bytes + 64 KiB per file, see
+   * ITEM_COST_BYTES / sync.rs OVERHEAD_PER_FILE) — the rate behind `etaSecs`; 0 while unknown.
+   */
+  costPerSec: number;
   /** Estimated seconds remaining; null while not enough data. */
   etaSecs: number | null;
   elapsedMs: number;
@@ -125,7 +139,12 @@ export interface SyncReport {
 /**
  * Commands (see src/lib/api.ts). `opId` is chosen by the UI per scan/sync so that a cancel is tied
  * to exactly one operation:
- *   scan({ source, target, scope, opId }), run_sync({ planId, opId }), cancel_operation({ opId })
+ *   scan({ source, target, scope, opId }), run_sync({ planId, opId }), cancel_operation({ opId }),
+ *   discard_plans({ planIds }) — releases stored scan plans that will not be run,
+ *   prepare_settings() / backup_settings() — protect settings.json (see src/lib/store.ts).
+ * The `scan-progress` / `sync-progress` events carry the `opId` of their operation.
+ * The backend keeps several scan plans at once (one per scanned project) until they run or are
+ * discarded; `run_sync` consumes its plan.
  */
 export type OperationId = number;
 
@@ -140,3 +159,41 @@ export const DEFAULT_SCOPE: SyncScope = {
  * source (e.g. UserSettings) can be added to the scope.
  */
 export const NEVER_SYNC = ["Library", "Temp", "Logs", "obj", ".git", ".vs", ".utmp"];
+
+// ---- UI-only types (persisted by the frontend, not part of the Rust contract) ------------------
+
+/**
+ * Result of a project's last run:
+ *   success   = synced without errors (or already in sync)
+ *   warnings  = synced without errors, but the scan skipped some paths
+ *   partial   = finished with errors
+ *   cancelled = cancelled by the user while syncing
+ *   failed    = the scan or the sync itself failed
+ */
+export type RunOutcome = "success" | "warnings" | "partial" | "cancelled" | "failed";
+
+export interface ProjectLastRun {
+  /** Epoch milliseconds. */
+  finishedAt: number;
+  outcome: RunOutcome;
+  durationMs: number;
+  bytesWritten: number;
+  /** Files copied, updated or rewritten after verification. */
+  filesWritten: number;
+  /** Files + folders removed from the target. */
+  deleted: number;
+  errorCount: number;
+}
+
+/** A saved source → target pair ("project"), persisted in the store under `projects`. */
+export interface SyncProject {
+  id: string;
+  /** Display name; defaults to the source folder's name. */
+  name: string;
+  source: string | null;
+  target: string | null;
+  scope: SyncScope;
+  /** The user confirmed a non-empty, non-Unity target. Reset whenever the target changes. */
+  targetAck: boolean;
+  lastRun: ProjectLastRun | null;
+}

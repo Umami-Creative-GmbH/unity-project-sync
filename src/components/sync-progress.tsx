@@ -49,9 +49,11 @@ interface SyncProgressViewProps {
   plan: PlanSummary;
   progress: SyncProgress | null;
   cancelling: boolean;
-  onCancel: () => void;
-  shutdownAfter: boolean;
-  onShutdownAfterChange: (v: boolean) => void;
+  /** Omit to hide the Cancel button (e.g. when the batch view has its own). */
+  onCancel?: () => void;
+  /** Omit `onShutdownAfterChange` to hide the "Shut down after" switch. */
+  shutdownAfter?: boolean;
+  onShutdownAfterChange?: (v: boolean) => void;
 }
 
 export function SyncProgressView({
@@ -96,15 +98,30 @@ export function SyncProgressView({
                 {formatPercent(fraction)}
               </div>
             </div>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmCancel(true)}
-              disabled={cancelling}
-              aria-label="Cancel sync"
-            >
-              <IconX data-icon="inline-start" />
-              Cancel
-            </Button>
+            {(onCancel || onShutdownAfterChange) && (
+              // The "Shut down after" switch sits next to Cancel so it stays on screen during the run.
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {onShutdownAfterChange && (
+                  <ShutdownSwitch
+                    id="shutdown-during-sync"
+                    compact
+                    checked={!!shutdownAfter}
+                    onCheckedChange={onShutdownAfterChange}
+                  />
+                )}
+                {onCancel && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setConfirmCancel(true)}
+                    disabled={cancelling}
+                    aria-label="Cancel sync"
+                  >
+                    <IconX data-icon="inline-start" />
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
 
           <Progress value={pct} className="h-2" aria-label="Sync progress" />
@@ -156,7 +173,6 @@ export function SyncProgressView({
         </Stat>
       </div>
 
-      <ShutdownSwitch id="shutdown-during-sync" checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
 
       <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
         <AlertDialogContent>
@@ -173,7 +189,7 @@ export function SyncProgressView({
               variant="destructive"
               onClick={() => {
                 setConfirmCancel(false);
-                onCancel();
+                onCancel?.();
               }}
             >
               Cancel sync

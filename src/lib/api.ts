@@ -19,9 +19,18 @@ export const api = {
   scan: (source: string, target: string, scope: SyncScope, opId: OperationId) =>
     invoke<PlanSummary>("scan", { source, target, scope, opId }),
   runSync: (planId: number, opId: OperationId) => invoke<SyncReport>("run_sync", { planId, opId }),
+  /** Releases stored scan plans that will not be run (unknown ids are ignored). */
+  discardPlans: (planIds: number[]) => invoke<void>("discard_plans", { planIds }),
   /** Cancels operation `opId` (also when the backend has not started it yet). */
   cancelOperation: (opId: OperationId) => invoke<void>("cancel_operation", { opId }),
   shutdownSystem: () => invoke<void>("shutdown_system"),
+  /**
+   * Before the settings store is loaded: moves an unreadable settings file aside (the store
+   * plugin would start empty and overwrite it). Returns the backup path, or null.
+   */
+  prepareSettings: () => invoke<string | null>("prepare_settings"),
+  /** Copies the settings file to a timestamped backup; returns its path. */
+  backupSettings: () => invoke<string>("backup_settings"),
 };
 
 export function onScanProgress(handler: (p: ScanProgress) => void): Promise<UnlistenFn> {

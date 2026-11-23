@@ -16,7 +16,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <TooltipProvider delayDuration={300}>
       <App />
-      <Toaster position="bottom-right" richColors={false} closeButton />
+      {/* Raised above the home footer so toasts never cover its sync buttons. */}
+      <Toaster position="bottom-right" offset={{ bottom: 80, right: 16 }} richColors={false} closeButton />
     </TooltipProvider>
   </React.StrictMode>,
 );

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { IconBolt, IconLoader2, IconSearch, IconX } from "@tabler/icons-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,9 +20,11 @@ interface ScanProgressViewProps {
   autoSync: boolean;
   cancelling: boolean;
   onCancel: () => void;
+  /** Line above the phase title, e.g. "Project 2 of 5 · MyGame". */
+  context?: ReactNode;
 }
 
-export function ScanProgressView({ progress, startedAt, autoSync, cancelling, onCancel }: ScanProgressViewProps) {
+export function ScanProgressView({ progress, startedAt, autoSync, cancelling, onCancel, context }: ScanProgressViewProps) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 500);
@@ -40,8 +42,10 @@ export function ScanProgressView({ progress, startedAt, autoSync, cancelling, on
             {autoSync ? <IconBolt className="size-5" /> : <IconSearch className="size-5" />}
           </div>
           <div className="min-w-0 flex-1">
+            {context && <div className="truncate text-xs font-medium text-muted-foreground">{context}</div>}
             <h2 className="text-base font-medium">{cancelling ? "Cancelling…" : PHASE_LABEL[phase]}</h2>
-            <p className="text-sm text-muted-foreground" aria-live="polite">
+            {/* No aria-live: it would announce the elapsed time every 500 ms (the app announces phases). */}
+            <p className="text-sm text-muted-foreground">
               {progress ? `${formatCount(progress.entries)} entries` : "Starting…"}
               <span className="mx-1.5">·</span>
               {formatSeconds((now - startedAt) / 1000)} elapsed
@@ -84,7 +88,7 @@ export function ScanProgressView({ progress, startedAt, autoSync, cancelling, on
 
         {autoSync && (
           <p className="text-xs text-muted-foreground">
-            Sync now: the sync starts automatically as soon as the scan finishes — no preview.
+            Sync now: syncing starts automatically as soon as the scans finish — no preview.
           </p>
         )}
       </CardContent>

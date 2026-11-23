@@ -87,6 +87,27 @@ export function plural(n: number, singular: string, pluralForm = `${singular}s`)
   return `${formatCount(n)} ${n === 1 ? singular : pluralForm}`;
 }
 
+const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/** "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago", else a date. */
+export function formatRelativeTime(epochMs: number, now: number = Date.now()): string {
+  const diff = Math.max(0, now - epochMs);
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} h ago`;
+  const days = Math.floor(h / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return dateFormat.format(new Date(epochMs));
+}
+
+export function formatDateTime(epochMs: number): string {
+  return dateTimeFormat.format(new Date(epochMs));
+}
+
 /** Splits "Assets/Scenes/Main.unity" into ["Assets/Scenes/", "Main.unity"]. */
 export function splitPath(path: string): [dir: string, name: string] {
   const i = path.lastIndexOf("/");

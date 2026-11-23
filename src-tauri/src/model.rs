@@ -31,6 +31,9 @@ pub struct ProjectInfo {
     pub is_unity_project: bool,
     pub unity_version: Option<String>,
     pub root_dirs: Vec<String>,
+    /// Canonical form of `path` for comparing folders across projects (junctions, symlinks and
+    /// drive aliases resolved; lowercase on Windows). Empty for a blank path.
+    pub compare_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +162,9 @@ pub struct SyncProgress {
     pub done_files: u64,
     pub total_files: u64,
     pub bytes_per_sec: f64,
+    /// Smoothed rate of the copy phase in cost units per second (bytes plus
+    /// `OVERHEAD_PER_FILE` per file), the rate behind `eta_secs`; 0 while not known yet.
+    pub cost_per_sec: f64,
     pub eta_secs: Option<f64>,
     pub elapsed_ms: u64,
     pub current_file: Option<String>,
@@ -231,6 +237,7 @@ mod tests {
             done_files: 0,
             total_files: 0,
             bytes_per_sec: 0.0,
+            cost_per_sec: 0.0,
             eta_secs: None,
             elapsed_ms: 0,
             current_file: None,

@@ -220,7 +220,7 @@ fn absolute(p: &Path) -> PathBuf {
 }
 
 /// Canonicalizes a path that may not exist yet (canonical nearest existing ancestor + rest).
-fn canonicalize_lenient(p: &Path) -> PathBuf {
+pub(crate) fn canonicalize_lenient(p: &Path) -> PathBuf {
     let abs = absolute(p);
     let mut existing: &Path = &abs;
     let mut rest = Vec::new();
@@ -254,8 +254,20 @@ fn nearest_existing(p: &Path) -> &Path {
     cur
 }
 
+/// The form of `p` used to compare folders across projects: canonical (junctions, symlinks,
+/// mapped drives and `..` resolved through the nearest existing ancestor), without a verbatim
+/// prefix and lowercase on Windows. Empty for a blank input.
+pub(crate) fn comparison_path(p: &str) -> String {
+    if p.trim().is_empty() {
+        return String::new();
+    }
+    compare_form(&canonicalize_lenient(Path::new(p)))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Form used only for comparing paths (no verbatim prefix; lowercase on Windows).
-fn compare_form(p: &Path) -> PathBuf {
+pub(crate) fn compare_form(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if cfg!(windows) {
         let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {

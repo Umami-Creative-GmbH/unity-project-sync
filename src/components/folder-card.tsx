@@ -23,13 +23,13 @@ import { cn } from "@/lib/utils";
 
 export type FolderRole = "source" | "target";
 
-interface FolderStatus {
+export interface FolderStatus {
   label: string;
   tone: Tone;
   icon: ReactNode;
 }
 
-function folderStatus(
+export function folderStatus(
   role: FolderRole,
   path: string | null,
   info: ProjectInfo | null,
