@@ -806,6 +806,19 @@ mod tests {
         assert!(g.body.contains("https://umami-creative.de/impressum"));
         assert!(!g.body.contains("Privacy"));
         assert!(!g.body.contains("src=\"http"));
+        // Screenshots (hero + gallery) in both themes, all embedded.
+        let shots: Vec<&str> = g
+            .body
+            .split("/assets/shot-")
+            .skip(1)
+            .map(|rest| rest.split('?').next().unwrap())
+            .collect();
+        // 5 shots, each: link (light), <source> (dark), <img> (light).
+        assert_eq!(shots.len(), 5 * 3, "{shots:?}");
+        for name in shots {
+            assert!(assets::find(&format!("shot-{name}")).is_some(), "{name}");
+        }
+        assert!(g.body.contains("media=\"(prefers-color-scheme: dark)\""));
         // GitHub links are plain links; counts are absent until the server fetched them.
         assert!(
             g.body.contains(
@@ -919,6 +932,8 @@ mod tests {
             ("/assets/site.css", "text/css; charset=utf-8"),
             ("/assets/site.js", "text/javascript; charset=utf-8"),
             ("/assets/Geist-OFL.txt", "text/plain; charset=utf-8"),
+            ("/assets/shot-transfer-light.png", "image/png"),
+            ("/assets/shot-transfer-dark.png", "image/png"),
         ] {
             let g = get_req(app(tmp.path(), PUB), uri).await;
             assert_eq!(g.status, StatusCode::OK, "{uri}");

@@ -105,6 +105,58 @@ const FEATURES: [(&str, &str, &str); 6] = [
     ),
 ];
 
+/// Gallery below the features: (screenshot, title, text, alt text). The hero shows "transfer".
+const SHOTS: [(&str, &str, &str, &str); 4] = [
+    (
+        "overview",
+        "All projects in one list",
+        "Every source and target pair with its Unity version, folder status and last sync. \
+         Problems show up before you start, not halfway through.",
+        "Project list with four Unity projects, their source and target folders, Unity \
+         versions, last sync times and one project that needs attention",
+    ),
+    (
+        "filelist",
+        "See every file first",
+        "A scan lists each file it will copy, update, verify or delete. Filter by action or \
+         path, untick projects you want to skip, then start the sync.",
+        "Scan preview with totals for new, changed, to verify, delete and unchanged files, and \
+         the expanded file list of one project",
+    ),
+    (
+        "editor",
+        "Choose what gets mirrored",
+        "Assets, Packages and ProjectSettings by default. Add folders like UserSettings; \
+         Library, Temp and friends are never offered.",
+        "Project editor with source and target folders, detected Unity versions and the sync \
+         scope with an Add folder menu",
+    ),
+    (
+        "report",
+        "A clear report at the end",
+        "Files written, items deleted, bytes and time for the whole batch and for each \
+         project, so you know the backup is complete.",
+        "Sync report: three projects in sync with files written, items deleted, bytes written \
+         and duration",
+    ),
+];
+
+const HERO_SHOT_ALT: &str = "Unity Project Sync copying a batch of three projects: a live \
+    speed chart with a tooltip, transferred bytes, files, time left and the status of each \
+    project";
+
+/// A screenshot that follows the page's colour scheme. The link opens the full-size image (a
+/// lightbox with JavaScript, see site.js).
+fn shot(name: &str, alt: &str, lazy: bool) -> String {
+    let light = esc(&assets::url(&format!("shot-{name}-light.png")));
+    let dark = esc(&assets::url(&format!("shot-{name}-dark.png")));
+    format!(
+        r#"<a class="shot-link" href="{light}" data-lightbox><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)"><img src="{light}" width="980" height="760" alt="{alt}"{loading} decoding="async"></picture></a>"#,
+        alt = esc(alt),
+        loading = if lazy { r#" loading="lazy""# } else { "" },
+    )
+}
+
 // ---------------------------------------------------------------------------------------------
 // Markdown
 // ---------------------------------------------------------------------------------------------
@@ -397,7 +449,43 @@ fn hero(latest: Option<&Release>) -> String {
             );
         }
     }
-    s.push_str("</div>\n</section>\n");
+    let _ = write!(
+        s,
+        "<figure class=\"hero-shot\">{}</figure>\n</div>\n</section>\n",
+        shot("transfer", HERO_SHOT_ALT, false)
+    );
+    s
+}
+
+fn screenshots() -> String {
+    let mut s = String::from(
+        r#"<section class="section" id="screenshots" aria-labelledby="screenshots-title">
+<div class="container">
+<div class="section-head">
+<p class="eyebrow">A closer look</p>
+<h2 id="screenshots-title">From scan to report</h2>
+<p class="section-lede">Light or dark, the app follows your Windows theme.</p>
+</div>
+<ul class="shot-grid" role="list">
+"#,
+    );
+    for (name, title, text, alt) in SHOTS {
+        let _ = write!(
+            s,
+            r#"<li class="card shot-card">
+{}
+<div class="shot-text">
+<h3>{}</h3>
+<p>{}</p>
+</div>
+</li>
+"#,
+            shot(name, alt, true),
+            esc(title),
+            esc(text)
+        );
+    }
+    s.push_str("</ul>\n</div>\n</section>\n");
     s
 }
 
@@ -569,6 +657,7 @@ pub fn render_landing(ctx: &PageCtx, releases: &[Release]) -> String {
         main.push_str(&whats_new(r));
     }
     main.push_str(&features());
+    main.push_str(&screenshots());
     main.push_str(&install(latest));
     if releases.len() > 1 {
         main.push_str(&previous_versions(&releases[1..]));

@@ -14,6 +14,24 @@ pub struct Asset {
     pub bytes: &'static [u8],
 }
 
+/// App screenshots from `static/screenshots/` (made with `pnpm demo`, see the root README), served
+/// as `/assets/shot-<name>-<theme>.png`. The folder holds a few more that only the README uses.
+macro_rules! screenshot {
+    ($name:literal, $theme:literal) => {
+        Asset {
+            name: concat!("shot-", $name, "-", $theme, ".png"),
+            content_type: "image/png",
+            bytes: include_bytes!(concat!(
+                "../static/screenshots/",
+                $name,
+                "-",
+                $theme,
+                ".png"
+            )),
+        }
+    };
+}
+
 pub const ASSETS: &[Asset] = &[
     Asset {
         name: "site.css",
@@ -45,6 +63,16 @@ pub const ASSETS: &[Asset] = &[
         content_type: "text/plain; charset=utf-8",
         bytes: include_bytes!("../static/Geist-OFL.txt"),
     },
+    screenshot!("overview", "light"),
+    screenshot!("overview", "dark"),
+    screenshot!("filelist", "light"),
+    screenshot!("filelist", "dark"),
+    screenshot!("transfer", "light"),
+    screenshot!("transfer", "dark"),
+    screenshot!("report", "light"),
+    screenshot!("report", "dark"),
+    screenshot!("editor", "light"),
+    screenshot!("editor", "dark"),
 ];
 
 pub fn find(name: &str) -> Option<&'static Asset> {

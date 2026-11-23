@@ -24,20 +24,64 @@
 
 Copying Unity projects between drives, backup folders, or machines is slow and noisy when gigabytes of regenerable `Library/`, `Temp/`, or `.git/` data get dragged along. **Unity Project Sync** is a lightweight desktop app for Windows (built with Tauri 2, Rust, and React) that mirrors only the parts of your Unity projects that actually matter — safely, in parallel, and with a full preview before anything is written or deleted.
 
+<!-- Screenshots: made with `pnpm demo` (see "Screenshots & demo mode"); they follow GitHub's light/dark theme. -->
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="docs/screenshots/project-overview.png"><img src="docs/screenshots/project-overview.png" alt="Project overview: saved Unity projects with source and target paths, detected Unity versions, folder status and per-project Sync buttons" width="100%" /></a>
+      <a href="update-server/static/screenshots/overview-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/overview-dark.png" /><img src="update-server/static/screenshots/overview-light.png" alt="Project list with four Unity projects, their source and target folders, Unity versions, last sync times and one project that needs attention" width="100%" /></picture></a>
       <br />
       <em>Project overview: all source → target pairs at a glance, with Unity version detection and pre-flight checks.</em>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="docs/screenshots/transfer.png"><img src="docs/screenshots/transfer.png" alt="Transfer in progress: live throughput chart with a hover tooltip, transferred bytes, files, time left and per-project batch status" width="100%" /></a>
+      <a href="update-server/static/screenshots/transfer-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/transfer-dark.png" /><img src="update-server/static/screenshots/transfer-light.png" alt="Batch sync in progress: live throughput chart with a hover tooltip, transferred bytes, files, time left and per-project status" width="100%" /></picture></a>
       <br />
       <em>Transfer: the live throughput chart doubles as the progress bar, with per-project batch status.</em>
     </td>
   </tr>
 </table>
+
+<details>
+<summary><strong>More screenshots</strong>: scan preview, file list, deletion check, sync scope, report, settings</summary>
+<br />
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/preview-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/preview-dark.png" /><img src="update-server/static/screenshots/preview-light.png" alt="Scan preview with totals for new, changed, to verify, delete and unchanged files per project" width="100%" /></picture></a>
+      <br />
+      <em>Scan preview: one combined summary for the whole batch; untick projects before syncing.</em>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/filelist-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/filelist-dark.png" /><img src="update-server/static/screenshots/filelist-light.png" alt="Expanded file list of one project with per-file actions, action filter tabs and a path filter" width="100%" /></picture></a>
+      <br />
+      <em>File list: every file the sync will copy, update, verify or delete, filterable by action and path.</em>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/confirm-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/confirm-dark.png" /><img src="update-server/static/screenshots/confirm-light.png" alt="Confirmation dialog listing how many files and folders will be deleted from which target" width="100%" /></picture></a>
+      <br />
+      <em>Deletion check: nothing is removed from a target without an explicit confirmation.</em>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/editor-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/editor-dark.png" /><img src="update-server/static/screenshots/editor-light.png" alt="Project editor with source and target folders, detected Unity versions and the sync scope with an Add folder menu" width="100%" /></picture></a>
+      <br />
+      <em>Sync scope: per project, with extra top-level folders such as <code>UserSettings/</code>.</em>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/report-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/report-dark.png" /><img src="update-server/static/screenshots/report-light.png" alt="Sync report: three projects in sync with files written, items deleted, bytes written and duration" width="100%" /></picture></a>
+      <br />
+      <em>Report: totals for the batch and an expandable summary per project.</em>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="update-server/static/screenshots/settings-light.png"><picture><source media="(prefers-color-scheme: dark)" srcset="update-server/static/screenshots/settings-dark.png" /><img src="update-server/static/screenshots/settings-light.png" alt="Sync settings with multi-threading, thread count and an explanation of the change detection rules" width="100%" /></picture></a>
+      <br />
+      <em>Settings: threading for SSDs, HDDs and network shares, plus how change detection works.</em>
+    </td>
+  </tr>
+</table>
+</details>
 
 ## Download & install
 
@@ -108,6 +152,7 @@ Unity Project Sync is built with [Tauri 2](https://v2.tauri.app/), [Rust](https:
 ```powershell
 pnpm install                            # install frontend dependencies
 pnpm tauri dev                          # run the desktop app in development mode
+pnpm demo                               # UI in the browser with demo data (see below)
 pnpm build                              # type-check and build the frontend
 pnpm test                               # run frontend unit tests (Vitest)
 cd src-tauri; cargo test                # run Rust sync engine tests
@@ -128,6 +173,14 @@ To observe the transfer speed chart on a fast NVMe/SSD during development, set `
 $env:UPS_DEBUG_THROTTLE_MBPS = "40"; pnpm tauri dev; Remove-Item env:UPS_DEBUG_THROTTLE_MBPS
 ```
 
+### Screenshots & demo mode
+
+`pnpm demo` runs the UI in a normal browser at <http://localhost:1430/?shots> against a simulated backend (`src/demo/`): four demo projects, scans and batch syncs with realistic file lists and transfer speeds, all deterministic. Only `vite --mode demo` swaps the Tauri modules for the stand-ins, so `pnpm tauri dev` and release builds never contain it.
+
+- `?shots` hides scrollbars; `?speed=4` runs the simulation 4× faster.
+- In the browser console, `upsDemo.pauseAt("Racing Prototype", 0.62)` freezes the next sync at 62 % of that project (`upsDemo.pause()` / `upsDemo.resume()` work any time), e.g. to hover the speed chart for a screenshot.
+- The README and the download page use the screenshots in `update-server/static/screenshots/` (`<screen>-light.png` / `<screen>-dark.png`, 980 × 760 like the app window). The page embeds the ones listed in `update-server/src/assets.rs`.
+
 ### Repository layout
 
 - `src/` — React UI, hooks, and pure frontend state/validation logic:
@@ -137,6 +190,7 @@ $env:UPS_DEBUG_THROTTLE_MBPS = "40"; pnpm tauri dev; Remove-Item env:UPS_DEBUG_T
   - `src/lib/speed-history.ts` — binned speed history backing the transfer chart
   - `src/lib/store.ts` — persistence and settings migration
   - `src/hooks/use-batch-runner.ts` — sequential scan/sync orchestration and cancellation
+  - `src/demo/` — demo data and simulated backend for `pnpm demo` (never in app builds)
 - `src-tauri/src/` — Rust backend and sync engine:
   - `model.rs` — serde types shared with the frontend
   - `project.rs` — folder inspection and Unity version detection

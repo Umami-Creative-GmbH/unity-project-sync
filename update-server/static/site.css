@@ -50,7 +50,9 @@
 
   --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.05);
   --shadow-md: 0 4px 12px -2px oklch(0 0 0 / 0.08), 0 2px 4px -2px oklch(0 0 0 / 0.06);
+  --shadow-shot: 0 28px 64px -16px oklch(0 0 0 / 0.22), 0 10px 24px -10px oklch(0 0 0 / 0.12);
   --icon-shadow: drop-shadow(0 14px 28px oklch(0 0 0 / 0.22));
+  --backdrop: oklch(0.145 0 0 / 0.72);
 
   --radius: 0.625rem;
   --radius-md: calc(var(--radius) * 0.8);
@@ -87,7 +89,9 @@
 
     --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
     --shadow-md: 0 6px 16px -4px oklch(0 0 0 / 0.5);
+    --shadow-shot: 0 28px 64px -16px oklch(0 0 0 / 0.7), 0 10px 24px -10px oklch(0 0 0 / 0.5);
     --icon-shadow: drop-shadow(0 14px 32px oklch(0 0 0 / 0.6));
+    --backdrop: oklch(0 0 0 / 0.8);
   }
 }
 
@@ -855,6 +859,131 @@ h2 {
   margin: 0;
   color: var(--muted-foreground);
   font-size: 0.9375rem;
+}
+
+/* ---------- screenshots ---------- */
+
+.shot-link {
+  display: block;
+  cursor: zoom-in;
+}
+
+.shot-link img {
+  width: 100%;
+  height: auto;
+}
+
+.shot-link:focus-visible {
+  outline-offset: -3px;
+}
+
+.hero-shot {
+  width: min(100%, 61.25rem);
+  margin: 3rem 0 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-shot);
+}
+
+@media (min-width: 768px) {
+  .hero-shot {
+    margin-top: 4rem;
+  }
+}
+
+.shot-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 768px) {
+  .shot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+}
+
+.shot-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.shot-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.shot-card .shot-link {
+  border-bottom: 1px solid var(--border);
+}
+
+.shot-text {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.shot-text h3 {
+  margin: 0 0 0.375rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.shot-text p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.9375rem;
+}
+
+/* Lightbox (site.js): the full-size screenshot over a dimmed page. */
+.lightbox {
+  max-width: min(96vw, 61.25rem);
+  max-height: 96vh;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-shot);
+  cursor: zoom-out;
+}
+
+.lightbox::backdrop {
+  background: var(--backdrop);
+}
+
+.lightbox img {
+  width: auto;
+  max-width: 100%;
+  max-height: calc(96vh - 2px);
+  border-radius: inherit;
+}
+
+/* On the corner, so it never covers the app's own buttons in the screenshot. */
+.lightbox-close {
+  position: absolute;
+  top: -0.875rem;
+  right: -0.875rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 999px;
+  border-color: var(--border-strong);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+}
+
+.lightbox-close:hover {
+  background: var(--accent);
 }
 
 /* ---------- install ---------- */
