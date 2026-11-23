@@ -29,6 +29,9 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 const RATE_TAU_SECS: f64 = 3.0;
 /// Minimum amount of copy-phase data before an ETA is reported.
 const ETA_WARMUP_SECS: f64 = 1.5;
+/// The byte speed is published only after this much copy time (≈3 readings), so one noisy first
+/// 100 ms interval does not show up as a spike at the start of every project.
+const SPEED_WARMUP_SECS: f64 = 0.3;
 /// ETAs above this (100 h) are meaningless: reported as unknown.
 const MAX_ETA_SECS: f64 = 360_000.0;
 /// `set_current` is updated every this many entries while a folder tree is deleted.
@@ -154,6 +157,9 @@ struct Shared<'a> {
     deleted_dirs: AtomicU64,
     bytes_written: AtomicU64,
     links: LinkGuard,
+    /// Debug builds only: `UPS_DEBUG_THROTTLE_MBPS` caps the total transfer rate (demo / QA).
+    #[cfg(debug_assertions)]
+    throttle: Option<debug_throttle::Throttle>,
 }
 
 impl<'a> Shared<'a> {
@@ -177,8 +183,27 @@ impl<'a> Shared<'a> {
             deleted_dirs: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
             links: LinkGuard::default(),
+            // Never throttle `cargo test` (also a debug build), even if the variable is set in the shell.
+            #[cfg(debug_assertions)]
+            throttle: if cfg!(test) {
+                None
+            } else {
+                debug_throttle::Throttle::from_env()
+            },
         }
     }
+
+    /// Debug builds: waits until `bytes` more fit into the throttled rate (if one is set).
+    #[cfg(debug_assertions)]
+    fn throttle(&self, bytes: u64) {
+        if let Some(t) = &self.throttle {
+            t.consume(bytes, || self.stopped());
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn throttle(&self, _bytes: u64) {}
 
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
@@ -254,15 +279,124 @@ impl FileProgress<'_, '_> {
     fn advance_to(&mut self, pos: u64) {
         let pos = pos.min(self.size);
         if pos > self.credited {
-            self.shared
-                .done_bytes
-                .fetch_add(pos - self.credited, Ordering::Relaxed);
+            let delta = pos - self.credited;
+            self.shared.throttle(delta);
+            self.shared.done_bytes.fetch_add(delta, Ordering::Relaxed);
             self.credited = pos;
         }
     }
 
     fn finish(&mut self) {
         self.advance_to(self.size);
+    }
+
+    /// Credits the rest of a failed file (never throttled: nothing is transferred).
+    fn skip_rest(&mut self) {
+        if self.size > self.credited {
+            self.shared
+                .done_bytes
+                .fetch_add(self.size - self.credited, Ordering::Relaxed);
+            self.credited = self.size;
+        }
+    }
+}
+
+/// `UPS_DEBUG_THROTTLE_MBPS=<MiB per second>`: caps the total transfer rate of a sync (all workers
+/// together) so the progress chart can be watched on fast disks. Compiled into debug builds only.
+#[cfg(debug_assertions)]
+mod debug_throttle {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    pub const ENV: &str = "UPS_DEBUG_THROTTLE_MBPS";
+    /// Sleeps are sliced so that a cancel is noticed quickly.
+    const SLICE: Duration = Duration::from_millis(50);
+
+    /// Shared token bucket in "virtual time" form (GCRA): every transfer reserves its slot after the
+    /// previous reservations and waits for it.
+    pub struct Throttle {
+        bytes_per_sec: f64,
+        next_free: Mutex<Option<Instant>>,
+    }
+
+    impl Throttle {
+        pub fn from_env() -> Option<Self> {
+            let mbps = std::env::var(ENV).ok()?.trim().parse::<f64>().ok()?;
+            let t = Self::new(mbps)?;
+            eprintln!("[debug] {ENV}: copy throughput limited to {mbps} MiB/s");
+            Some(t)
+        }
+
+        pub fn new(mbps: f64) -> Option<Self> {
+            (mbps.is_finite() && mbps > 0.0).then(|| Self {
+                bytes_per_sec: mbps * 1024.0 * 1024.0,
+                next_free: Mutex::new(None),
+            })
+        }
+
+        /// Blocks until `bytes` fit into the rate; returns early when `stopped()` turns true.
+        pub fn consume(&self, bytes: u64, stopped: impl Fn() -> bool) {
+            let cost = Duration::from_secs_f64(bytes as f64 / self.bytes_per_sec);
+            let due = {
+                let mut next = self.next_free.lock().unwrap_or_else(|e| e.into_inner());
+                let now = Instant::now();
+                // Idle time earns no burst: after a pause (between projects, after the deletion
+                // phase) the rate starts at the limit instead of spiking above it.
+                let start = next.map_or(now, |t| t.max(now));
+                let end = start + cost;
+                *next = Some(end);
+                end
+            };
+            loop {
+                let now = Instant::now();
+                if now >= due || stopped() {
+                    return;
+                }
+                std::thread::sleep((due - now).min(SLICE));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn rejects_invalid_rates() {
+            assert!(Throttle::new(0.0).is_none());
+            assert!(Throttle::new(-5.0).is_none());
+            assert!(Throttle::new(f64::NAN).is_none());
+            assert!(Throttle::new(10.0).is_some());
+        }
+
+        #[test]
+        fn limits_the_total_rate_across_threads() {
+            // 100 MiB/s, no burst: 4 threads move 4 × 5 MiB = 20 MiB = 20 reservations of 10 ms,
+            // chained from the first, so at least 200 ms.
+            let t = Throttle::new(100.0).unwrap();
+            let started = Instant::now();
+            std::thread::scope(|s| {
+                for _ in 0..4 {
+                    s.spawn(|| {
+                        for _ in 0..5 {
+                            t.consume(1024 * 1024, || false);
+                        }
+                    });
+                }
+            });
+            let elapsed = started.elapsed();
+            // The 5 ms margin only covers f64 → Duration rounding; scheduling only adds time.
+            assert!(elapsed >= Duration::from_millis(195), "{elapsed:?}");
+            assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+        }
+
+        #[test]
+        fn returns_early_when_stopped() {
+            let t = Throttle::new(1.0).unwrap(); // 1 MiB/s: 100 MiB would take 100 s
+            let started = Instant::now();
+            t.consume(100 * 1024 * 1024, || true);
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
     }
 }
 
@@ -354,6 +488,17 @@ pub fn execute(
     }
 }
 
+/// The byte speed a progress event carries: 0 ("no reading yet") during the first
+/// `SPEED_WARMUP_SECS` of the copy phase, the smoothed rate otherwise. The last event (and any
+/// finalizing one) always carries the real rate, so a very short project does not end on a 0.
+fn published_speed(rate: f64, copy_elapsed: f64, phase: SyncPhase, finished: bool) -> f64 {
+    if !finished && phase == SyncPhase::Copying && copy_elapsed < SPEED_WARMUP_SECS {
+        0.0
+    } else {
+        rate
+    }
+}
+
 fn reporter(
     sh: &Shared,
     rx: mpsc::Receiver<()>,
@@ -426,7 +571,7 @@ fn reporter(
             total_bytes: totals.bytes,
             done_files,
             total_files: totals.files,
-            bytes_per_sec: byte_rate.value(),
+            bytes_per_sec: published_speed(byte_rate.value(), copy_elapsed, phase, finished),
             cost_per_sec: if warm { rate } else { 0.0 },
             eta_secs,
             elapsed_ms: started.elapsed().as_millis() as u64,
@@ -727,7 +872,7 @@ fn run_transfer(plan: &Plan, t: &Transfer, sh: &Shared) {
         }
         Err(OpError::Cancelled) => {}
         Err(OpError::Failed(msg)) => {
-            fp.finish();
+            fp.skip_rest();
             sh.done_files.fetch_add(1, Ordering::Relaxed);
             sh.error(&t.src_rel, msg);
             if fs::metadata(&plan.target).is_err() {
@@ -735,7 +880,7 @@ fn run_transfer(plan: &Plan, t: &Transfer, sh: &Shared) {
             }
         }
         Err(OpError::Fatal(msg)) => {
-            fp.finish();
+            fp.skip_rest();
             sh.done_files.fetch_add(1, Ordering::Relaxed);
             sh.error(&t.src_rel, msg);
             sh.abort("the target disk is full");
@@ -983,5 +1128,21 @@ mod tests {
         let rate = ema.value().max(0.5 * avg_before_stall);
         let eta = 3e9 / rate;
         assert!(eta.is_finite() && eta < MAX_ETA_SECS, "{eta}");
+    }
+
+    #[test]
+    fn speed_is_published_after_the_warm_up() {
+        let copying = SyncPhase::Copying;
+        // The first noisy readings of the copy phase are held back ("no reading yet").
+        assert_eq!(published_speed(5e8, 0.0, copying, false), 0.0);
+        assert_eq!(published_speed(5e8, 0.1, copying, false), 0.0);
+        assert_eq!(
+            published_speed(5e8, SPEED_WARMUP_SECS - 0.01, copying, false),
+            0.0
+        );
+        assert_eq!(published_speed(5e8, SPEED_WARMUP_SECS, copying, false), 5e8);
+        // The last event and finalizing events always carry the rate (a short project).
+        assert_eq!(published_speed(5e8, 0.1, copying, true), 5e8);
+        assert_eq!(published_speed(5e8, 0.1, SyncPhase::Finalizing, false), 5e8);
     }
 }

@@ -8,6 +8,13 @@
 // src/hooks/use-batch-runner.ts.
 import { reportDeleted, reportErrorCount, reportFilesWritten, reportOutcome } from "@/lib/report";
 import type { BatchWarning } from "@/lib/projects";
+import {
+  addSpeedSample,
+  advanceSpeedHistory,
+  createSpeedHistory,
+  speedReading,
+  type SpeedHistory,
+} from "@/lib/speed-history";
 import type {
   CountBytes,
   PlanSummary,
@@ -61,6 +68,8 @@ export interface BatchState {
   /** Last known cost rate of this run (cost units/s), for the overall ETA between projects. */
   lastCostPerSec: number;
   cancelling: boolean;
+  /** Speed over overall progress of the run phase (the transfer chart); reset when syncing starts. */
+  speedHistory: SpeedHistory;
   startedAt: number;
   syncStartedAt: number | null;
   finishedAt: number | null;
@@ -99,6 +108,7 @@ export const initialBatch: BatchState = {
   currentOpId: null,
   lastCostPerSec: 0,
   cancelling: false,
+  speedHistory: createSpeedHistory(),
   startedAt: 0,
   syncStartedAt: null,
   finishedAt: null,
@@ -144,6 +154,23 @@ function updateItem(state: BatchState, id: string, fn: (item: BatchItem) => Batc
     return fn(it);
   });
   return changed ? { ...state, items } : state;
+}
+
+/** Position of a project among the projects of the run phase (-1 if it does not run). */
+function runIndex(items: BatchItem[], id: string): number {
+  return items.filter((it) => it.run !== "none").findIndex((it) => it.projectId === id);
+}
+
+/**
+ * A project ended: the chart's progress front moves to the new overall progress. When it failed or
+ * was cancelled, the rest of its share of the run is drawn as a gap (speed 0), not as the previous
+ * speed stretched across it.
+ */
+function withFrontAdvanced(state: BatchState, endedId: string, aborted: boolean): BatchState {
+  const fraction = overallProgress(state.items, state.lastCostPerSec).fraction;
+  const project = runIndex(state.items, endedId);
+  const end = project >= 0 ? { project, aborted } : undefined;
+  return { ...state, speedHistory: advanceSpeedHistory(state.speedHistory, fraction, end) };
 }
 
 export function isBatchBusy(state: BatchState): boolean {
@@ -232,6 +259,7 @@ export function batchReducer(state: BatchState, action: BatchAction): BatchState
         currentId: null,
         currentOpId: null,
         cancelling: false,
+        speedHistory: createSpeedHistory(),
         syncStartedAt: action.now,
         items: state.items.map((it) => {
           const runs = ids.has(it.projectId) && canInclude(it);
@@ -253,28 +281,55 @@ export function batchReducer(state: BatchState, action: BatchAction): BatchState
     case "syncProgress": {
       // Events of an earlier operation can arrive after its command returned: drop them.
       if (state.phase !== "syncing" || !state.currentId || action.progress.opId !== state.currentOpId) return state;
-      const next = updateItem(state, state.currentId, (it) =>
+      const updated = updateItem(state, state.currentId, (it) =>
         it.run === "running" ? { ...it, syncProgress: action.progress } : it,
       );
-      const rate = action.progress.costPerSec;
-      return next !== state && rate > 0 && action.progress.phase !== "deleting" ? { ...next, lastCostPerSec: rate } : next;
+      if (updated === state) return state;
+      const p = action.progress;
+      const rate = p.costPerSec;
+      const next = rate > 0 && p.phase !== "deleting" ? { ...updated, lastCostPerSec: rate } : updated;
+      // The chart's x is the overall progress, so a single project and a batch share one path.
+      const overall = overallProgress(next.items, next.lastCostPerSec);
+      const projectIndex = Math.max(0, runIndex(next.items, state.currentId));
+      const h = next.speedHistory;
+      return {
+        ...next,
+        speedHistory: addSpeedSample(h, {
+          x: overall.fraction,
+          // Deleting moves no bytes: speed 0. Early in a copy phase, 0 means "nothing measured yet".
+          speed: speedReading(h, { phase: p.phase, bytesPerSec: p.bytesPerSec, elapsedMs: p.elapsedMs, projectIndex }),
+          elapsedMs: p.elapsedMs,
+          projectIndex,
+          doneBytes: overall.doneBytes,
+          copying: p.phase === "copying",
+          deleting: p.phase === "deleting",
+        }),
+      };
     }
 
     case "syncFinished":
       if (state.phase !== "syncing") return state;
-      return {
-        ...updateItem(state, action.id, (it) => ({ ...it, run: "done", report: action.report })),
-        currentId: null,
-        currentOpId: null,
-      };
+      return withFrontAdvanced(
+        {
+          ...updateItem(state, action.id, (it) => ({ ...it, run: "done", report: action.report })),
+          currentId: null,
+          currentOpId: null,
+        },
+        action.id,
+        action.report.cancelled,
+      );
 
     case "syncFailed":
       if (state.phase !== "syncing") return state;
-      return {
-        ...updateItem(state, action.id, (it) => ({ ...it, run: "failed", runError: action.error })),
-        currentId: null,
-        currentOpId: null,
-      };
+      return withFrontAdvanced(
+        {
+          ...updateItem(state, action.id, (it) => ({ ...it, run: "failed", runError: action.error })),
+          currentId: null,
+          currentOpId: null,
+        },
+        action.id,
+        true,
+      );
 
     case "cancelRequested":
       if (!isBatchBusy(state)) return state;
@@ -390,6 +445,9 @@ export interface OverallProgress {
   totalBytes: number;
   /** Finished projects' totals + the current project's doneBytes. */
   doneBytes: number;
+  /** Files to copy/update/verify across all projects, and done the same way as the bytes. */
+  totalFiles: number;
+  doneFiles: number;
   /**
    * Remaining overall cost (bytes + per-item cost, pending projects included) / smoothed cost rate.
    * null while no rate is known yet — never 0 while projects remain.
@@ -429,6 +487,8 @@ export function overallProgress(items: BatchItem[], fallbackCostPerSec = 0): Ove
   let doneCost = 0;
   let totalBytes = 0;
   let doneBytes = 0;
+  let totalFiles = 0;
+  let doneFiles = 0;
   let pendingCost = 0;
   let currentRemainingCost = 0;
   let finished = 0;
@@ -441,10 +501,14 @@ export function overallProgress(items: BatchItem[], fallbackCostPerSec = 0): Ove
     const cost = planCost(plan);
     totalCost += cost;
     totalBytes += plan.totalBytes;
+    // The engine's own count (it includes type conflicts and case renames) once it is known.
+    const files = it.syncProgress?.totalFiles ?? plan.copy.files + plan.update.files + plan.verify.files;
+    totalFiles += files;
     if (it.run === "done" || it.run === "failed" || it.run === "notRun") {
       finished++;
       doneCost += cost;
       doneBytes += plan.totalBytes;
+      doneFiles += files;
     } else if (it.run === "running") {
       current = it;
       position = i + 1;
@@ -453,6 +517,7 @@ export function overallProgress(items: BatchItem[], fallbackCostPerSec = 0): Ove
       const credit = p ? runningCredit(plan, p, cost) : 0;
       doneCost += credit;
       doneBytes += Math.min(p?.doneBytes ?? 0, total);
+      doneFiles += Math.min(p?.doneFiles ?? 0, files);
       currentRemainingCost = Math.max(0, cost - credit);
     } else {
       pendingCost += cost;
@@ -476,7 +541,17 @@ export function overallProgress(items: BatchItem[], fallbackCostPerSec = 0): Ove
     }
   }
 
-  return { fraction, totalBytes, doneBytes, etaSecs, position, count: runItems.length, finished };
+  return {
+    fraction,
+    totalBytes,
+    doneBytes,
+    totalFiles,
+    doneFiles,
+    etaSecs,
+    position,
+    count: runItems.length,
+    finished,
+  };
 }
 
 // ---- outcomes -------------------------------------------------------------------------------------

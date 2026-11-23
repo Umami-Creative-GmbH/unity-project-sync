@@ -20,6 +20,7 @@ import {
   type BatchItem,
   type BatchState,
 } from "@/lib/batch";
+import { speedPoints } from "@/lib/speed-history";
 import type { PlanSummary, SyncProgress, SyncReport } from "@/lib/types";
 
 const SCOPE = { includeRootFiles: true, folders: ["Assets"] };
@@ -437,6 +438,170 @@ describe("late progress events", () => {
     expect(s.lastCostPerSec).toBe(42);
   });
 });
+describe("speed history wiring", () => {
+  const MB = 1024 * 1024;
+  const bytesPlan = () => plan({ copy: { files: 1, bytes: 100 * MB } });
+  const syncing = () =>
+    run(
+      initialBatch,
+      { type: "begin", autoSync: true, chosenIds: ["a", "b"], now: 0 },
+      { type: "preflightDone", items: [item("a"), item("b")] },
+      { type: "scanStarted", id: "a", opId: 1, now: 0 },
+      { type: "scanFinished", id: "a", plan: bytesPlan() },
+      { type: "scanStarted", id: "b", opId: 2, now: 0 },
+      { type: "scanFinished", id: "b", plan: bytesPlan() },
+      { type: "syncPhaseStarted", ids: ["a", "b"], now: 1 },
+      { type: "syncStarted", id: "a", opId: 3 },
+    );
+  const copying = (opId: number, doneBytes: number, extra: Partial<SyncProgress> = {}) =>
+    progress({ opId, doneBytes, totalBytes: 100 * MB, totalFiles: 1, bytesPerSec: 50 * MB, elapsedMs: 1000, ...extra });
+
+  it("records each accepted event at the overall progress, and drops late ones", () => {
+    let s = run(syncing(), { type: "syncProgress", progress: copying(3, 50 * MB) });
+    const h = s.speedHistory;
+    expect(h.samples).toBe(1);
+    expect(h.x).toBeCloseTo(overallProgress(s.items).fraction);
+    expect(h.x).toBeGreaterThan(0.2);
+    expect(h.x).toBeLessThan(0.3);
+    expect(h.current).toBe(50 * MB);
+
+    // A late event of another operation is dropped and doesn't touch the history.
+    const after = run(s, { type: "syncProgress", progress: copying(99, 90 * MB) });
+    expect(after).toBe(s);
+
+    // Project "a" finishes: the front moves to its end; "b" starts there (a project boundary).
+    s = run(
+      s,
+      { type: "syncFinished", id: "a", report: report() },
+      { type: "syncStarted", id: "b", opId: 4 },
+      { type: "syncProgress", progress: copying(4, 10 * MB, { elapsedMs: 200 }) },
+    );
+    expect(s.speedHistory.boundaries).toHaveLength(1);
+    expect(s.speedHistory.boundaries[0]).toBeCloseTo(0.5);
+    expect(s.speedHistory.x).toBeGreaterThan(0.5);
+    expect(s.speedHistory.projectIndex).toBe(1);
+  });
+
+  it("records the deletion phase at speed 0", () => {
+    const s = run(syncing(), {
+      type: "syncProgress",
+      progress: copying(3, 0, { phase: "deleting", bytesPerSec: 123, deleteDone: 1, deleteTotal: 2 }),
+    });
+    expect(s.speedHistory.samples).toBe(1);
+    expect(s.speedHistory.current).toBe(0);
+  });
+
+  it("draws no point for a copy event without a speed reading yet", () => {
+    const s = run(syncing(), { type: "syncProgress", progress: copying(3, 1 * MB, { bytesPerSec: 0, elapsedMs: 50 }) });
+    expect(s.speedHistory.samples).toBe(1);
+    expect(s.speedHistory.x).toBeGreaterThan(0);
+    expect(speedPoints(s.speedHistory)).toEqual([]);
+    const next = run(s, { type: "syncProgress", progress: copying(3, 5 * MB, { bytesPerSec: 40 * MB, elapsedMs: 150 }) });
+    expect(speedPoints(next.speedHistory).map((p) => p.speed)).toEqual([40 * MB]);
+  });
+
+  it("draws a copy phase that moves no bytes at 0 once the grace period has passed", () => {
+    let s = syncing();
+    for (const elapsedMs of [0, 100, 300, 600, 900]) {
+      s = run(s, { type: "syncProgress", progress: copying(3, 0, { bytesPerSec: 0, elapsedMs }) });
+    }
+    expect(speedPoints(s.speedHistory)).toEqual([]); // still "Preparing…"
+    s = run(s, { type: "syncProgress", progress: copying(3, 0, { bytesPerSec: 0, elapsedMs: 1200 }) });
+    expect(speedPoints(s.speedHistory).map((p) => p.speed)).toEqual([0]);
+  });
+
+  it("adds no point for a new project's first copy event without a reading", () => {
+    let s = run(
+      syncing(),
+      { type: "syncProgress", progress: copying(3, 50 * MB, { bytesPerSec: 80 * MB }) },
+      { type: "syncFinished", id: "a", report: report() },
+      { type: "syncStarted", id: "b", opId: 4 },
+    );
+    const bins = s.speedHistory.bins.filter(Boolean).length;
+    s = run(s, { type: "syncProgress", progress: copying(4, 1 * MB, { bytesPerSec: 0, elapsedMs: 100 }) });
+    expect(s.speedHistory.bins.filter(Boolean)).toHaveLength(bins);
+    expect(s.speedHistory.current).toBe(80 * MB);
+    expect(s.speedHistory.projectIndex).toBe(1);
+  });
+
+  describe("a project that fails", () => {
+    const three = () =>
+      run(
+        initialBatch,
+        { type: "begin", autoSync: true, chosenIds: ["a", "b", "c"], now: 0 },
+        { type: "preflightDone", items: [item("a"), item("b"), item("c")] },
+        { type: "scanStarted", id: "a", opId: 1, now: 0 },
+        { type: "scanFinished", id: "a", plan: bytesPlan() },
+        { type: "scanStarted", id: "b", opId: 2, now: 0 },
+        { type: "scanFinished", id: "b", plan: bytesPlan() },
+        { type: "scanStarted", id: "c", opId: 3, now: 0 },
+        { type: "scanFinished", id: "c", plan: bytesPlan() },
+        { type: "syncPhaseStarted", ids: ["a", "b", "c"], now: 1 },
+        { type: "syncStarted", id: "a", opId: 10 },
+        { type: "syncProgress", progress: copying(10, 50 * MB) },
+        {
+          type: "syncProgress",
+          progress: copying(10, 100 * MB, { phase: "finalizing", doneFiles: 1, elapsedMs: 2000 }),
+        },
+        { type: "syncFinished", id: "a", report: report() },
+        { type: "syncStarted", id: "b", opId: 11 },
+      );
+
+    it("before its first event: its span is drawn at 0, not at the previous project's speed", () => {
+      const s = run(
+        three(),
+        { type: "syncFailed", id: "b", error: "boom" },
+        { type: "syncStarted", id: "c", opId: 12 },
+        { type: "syncProgress", progress: copying(12, 10 * MB, { elapsedMs: 300 }) },
+      );
+      const h = s.speedHistory;
+      expect(h.boundaries).toHaveLength(2);
+      expect(h.boundaries[0]).toBeCloseTo(1 / 3);
+      expect(h.boundaries[1]).toBeCloseTo(2 / 3);
+      const pts = speedPoints(h);
+      const inside = pts.filter((p) => p.x > 1 / 3 + 0.001 && p.x < 2 / 3);
+      expect(inside.length).toBeGreaterThan(0);
+      expect(inside.every((p) => p.speed === 0 && p.project === 1)).toBe(true);
+      expect(pts.some((p) => p.project === 0 && p.speed > 0 && p.x > 1 / 3 + 0.001 && p.x < 2 / 3)).toBe(false);
+      // The run's elapsed time still adds up the projects that ran.
+      expect(h.elapsedOffsetMs).toBe(2000);
+    });
+
+    it("partway: its speed drops to 0 where it stopped", () => {
+      let s = run(three(), { type: "syncProgress", progress: copying(11, 35 * MB, { bytesPerSec: 70 * MB }) });
+      const stoppedAt = s.speedHistory.x;
+      expect(stoppedAt).toBeGreaterThan(0.44);
+      s = run(s, { type: "syncFailed", id: "b", error: "disk full" });
+      const h = s.speedHistory;
+      expect(h.x).toBeCloseTo(2 / 3);
+      expect(h.current).toBe(0);
+      const after = speedPoints(h).filter((p) => p.x > stoppedAt + 0.0005);
+      expect(after.length).toBeGreaterThan(0);
+      expect(after.every((p) => p.speed === 0)).toBe(true);
+    });
+  });
+
+  it("starts a fresh history for every sync phase", () => {
+    const s = run(syncing(), { type: "syncProgress", progress: copying(3, 50 * MB) });
+    expect(s.speedHistory.samples).toBe(1);
+    const again = run(
+      s,
+      { type: "syncFinished", id: "a", report: report() },
+      { type: "finished", now: 5 },
+      { type: "begin", autoSync: true, chosenIds: ["a"], now: 6 },
+    );
+    expect(again.speedHistory.samples).toBe(0);
+    const resynced = run(
+      again,
+      { type: "preflightDone", items: [item("a")] },
+      { type: "scanStarted", id: "a", opId: 5, now: 7 },
+      { type: "scanFinished", id: "a", plan: bytesPlan() },
+      { type: "syncPhaseStarted", ids: ["a"], now: 8 },
+    );
+    expect(resynced.speedHistory).toMatchObject({ samples: 0, x: 0, boundaries: [] });
+  });
+});
+
 describe("outcomes, last runs and shutdown", () => {
   const reportState = (items: BatchItem[], extra: Partial<BatchState> = {}): BatchState => ({
     ...initialBatch,

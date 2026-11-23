@@ -14,6 +14,11 @@ export default defineConfig(() => ({
       "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
+  // The app is loaded from disk by the webview, so one larger bundle (recharts for the transfer
+  // chart) costs nothing; keep the warning for real surprises.
+  build: {
+    chunkSizeWarningLimit: 1500,
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   // 1. prevent Vite from obscuring rust errors
