@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Release staging (scripts/release.ps1)
+/release/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
