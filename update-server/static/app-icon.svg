@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#27272A"/>
+      <stop offset="1" stop-color="#09090B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="470" cy="420" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="faceTop" x1="470" y1="165" x2="470" y2="455" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4E4E7"/>
+    </linearGradient>
+    <linearGradient id="faceLeft" x1="219" y1="310" x2="470" y2="745" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D4D4D8"/>
+      <stop offset="1" stop-color="#A1A1AA"/>
+    </linearGradient>
+    <linearGradient id="faceRight" x1="721" y1="310" x2="470" y2="745" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A1A1AA"/>
+      <stop offset="1" stop-color="#52525B"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="600" y1="580" x2="870" y2="890" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EE7B7"/>
+      <stop offset="0.45" stop-color="#10B981"/>
+      <stop offset="1" stop-color="#047857"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="64" y="64" width="896" height="896" rx="208"/>
+    </clipPath>
+  </defs>
+
+  <!-- tile -->
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#glow)"/>
+  <rect x="66" y="66" width="892" height="892" rx="206" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+
+  <g clip-path="url(#tile)">
+    <!-- cube: three faceted faces split by tile-coloured seams -->
+    <polygon points="470,165 721,310 470,455 219,310" fill="url(#faceTop)"/>
+    <polygon points="219,310 470,455 470,745 219,600" fill="url(#faceLeft)"/>
+    <polygon points="470,455 721,310 721,600 470,745" fill="url(#faceRight)"/>
+    <g stroke="url(#bg)" stroke-width="26" stroke-linecap="butt">
+      <line x1="470" y1="455" x2="219" y2="310"/>
+      <line x1="470" y1="455" x2="721" y2="310"/>
+      <line x1="470" y1="455" x2="470" y2="745"/>
+    </g>
+    <!-- seam hub -->
+    <circle cx="470" cy="455" r="15" fill="url(#bg)"/>
+
+    <!-- sync badge, cut out of the cube by a tile-coloured ring -->
+    <circle cx="735" cy="735" r="200" fill="url(#bg)"/>
+    <circle cx="735" cy="735" r="174" fill="url(#badge)"/>
+    <circle cx="735" cy="735" r="172" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="4"/>
+
+    <!-- tabler "refresh" glyph (MIT), matching the app's icon set -->
+    <g transform="translate(591 591) scale(12)" fill="none" stroke="#FFFFFF" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/>
+      <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
+    </g>
+  </g>
+</svg>
