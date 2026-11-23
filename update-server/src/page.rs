@@ -9,6 +9,7 @@ use std::fmt::Write;
 use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd, html};
 
 use crate::assets;
+use crate::github::{RepoStats, format_count};
 use crate::releases::Release;
 use crate::routes::file_path;
 use crate::util::{current_year, display_date, display_size, esc};
@@ -23,6 +24,14 @@ pub struct PageCtx<'a> {
     pub base_url: String,
     pub imprint_url: Option<&'a str>,
     pub privacy_url: Option<&'a str>,
+    pub github: Option<GitHubLink<'a>>,
+}
+
+pub struct GitHubLink<'a> {
+    /// `owner/name`, validated by [`crate::github::valid_repo`].
+    pub repo: &'a str,
+    /// `None` until the counts were fetched once; the links are shown without counts then.
+    pub stats: Option<RepoStats>,
 }
 
 pub enum NotFound {
@@ -54,6 +63,8 @@ const I_CHECK: &str = r#"<path d="M5 12l5 5l10 -10"/>"#;
 const I_CHEVRON_DOWN: &str = r#"<path d="M6 9l6 6l6 -6"/>"#;
 const I_FINGERPRINT: &str = r#"<path d="M18.9 7a8 8 0 0 1 1.1 5v1a6 6 0 0 0 .8 3"/><path d="M8 11a4 4 0 0 1 8 0v1a10 10 0 0 0 2 6"/><path d="M12 11v2a14 14 0 0 0 2.5 8"/><path d="M8 15a18 18 0 0 0 1.8 6"/><path d="M4.9 19a22 22 0 0 1 -.9 -7v-1a8 8 0 0 1 12 -6.95"/>"#;
 const I_ARROW_LEFT: &str = r#"<path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/>"#;
+const I_GITHUB: &str = r#"<path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/>"#;
+const I_GIT_FORK: &str = r#"<path d="M10 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M5 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M15 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 8v2a2 2 0 0 0 2 2h6a2 2 0 0 0 2 -2v-2"/><path d="M12 12l0 4"/>"#;
 
 const FEATURES: [(&str, &str, &str); 6] = [
     (
@@ -177,6 +188,61 @@ pub fn render_markdown(md: &str) -> String {
 // Layout
 // ---------------------------------------------------------------------------------------------
 
+fn plural(n: u64, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// "Star" and "Fork" buttons in the GitHub style, each with its count when known. Starring
+/// happens on the repository page (GitHub has no direct star URL); forking has its own page.
+fn github_buttons(gh: &GitHubLink) -> String {
+    let repo_url = format!("https://github.com/{}", gh.repo);
+    let button = |class: &str,
+                  href: &str,
+                  ic: &str,
+                  label: &str,
+                  title: &str,
+                  count: Option<(u64, String)>| {
+        let (count_html, aria) = match count {
+            Some((n, spoken)) => (
+                format!(r#"<span class="gh-count">{}</span>"#, format_count(n)),
+                format!("{title} ({spoken})"),
+            ),
+            None => (String::new(), title.to_string()),
+        };
+        format!(
+            r#"<a class="btn btn-outline btn-sm gh-btn{class}" href="{href}" title="{title}" aria-label="{aria}">{icon}<span class="gh-label">{label}</span>{count_html}</a>
+"#,
+            href = esc(href),
+            title = esc(title),
+            aria = esc(&aria),
+            icon = icon(ic),
+        )
+    };
+    let mut s = button(
+        "",
+        &repo_url,
+        I_GITHUB,
+        "Star",
+        &format!("Star {APP_NAME} on GitHub"),
+        gh.stats
+            .map(|st| (st.stars, plural(st.stars, "star", "stars"))),
+    );
+    s.push_str(&button(
+        " gh-fork",
+        &format!("{repo_url}/fork"),
+        I_GIT_FORK,
+        "Fork",
+        &format!("Fork {APP_NAME} on GitHub"),
+        gh.stats
+            .map(|st| (st.forks, plural(st.forks, "fork", "forks"))),
+    ));
+    s
+}
+
 fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
     let icon_url = assets::url("app-icon.svg");
     let base = esc(&ctx.base_url);
@@ -218,6 +284,10 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
         css = esc(&assets::url("site.css")),
         js = esc(&assets::url("site.js")),
     );
+    s.push_str("<div class=\"header-actions\">\n");
+    if let Some(gh) = &ctx.github {
+        s.push_str(&github_buttons(gh));
+    }
     if header_cta {
         let _ = writeln!(
             s,
@@ -225,7 +295,7 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
             icon(I_DOWNLOAD)
         );
     }
-    s.push_str("</div>\n</header>\n<main id=\"main\" tabindex=\"-1\">\n");
+    s.push_str("</div>\n</div>\n</header>\n<main id=\"main\" tabindex=\"-1\">\n");
     s.push_str(main);
     let _ = write!(
         s,
@@ -233,11 +303,18 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
 <footer class="site-footer">
 <div class="container footer-inner">
 <p>&copy; {year} Umami Creative GmbH</p>
-<nav aria-label="Legal and licences">
+<nav aria-label="Source, legal and licences">
 <ul class="footer-links" role="list">
 "#,
         year = current_year()
     );
+    if let Some(gh) = &ctx.github {
+        let _ = writeln!(
+            s,
+            r#"<li><a href="https://github.com/{}">Source code</a></li>"#,
+            esc(gh.repo)
+        );
+    }
     if let Some(u) = ctx.imprint_url {
         let _ = writeln!(s, r#"<li><a href="{}">Imprint</a></li>"#, esc(u));
     }
@@ -585,6 +662,50 @@ mod tests {
         assert!(h.contains("<h3>Fixes</h3>"), "{h}");
         assert!(h.contains("<h4>Details</h4>"), "{h}");
         assert!(h.contains("<h5>Deep</h5>"), "{h}");
+    }
+
+    fn ctx(stats: Option<RepoStats>) -> PageCtx<'static> {
+        PageCtx {
+            base_url: "https://ups.example".into(),
+            imprint_url: None,
+            privacy_url: None,
+            github: Some(GitHubLink {
+                repo: "acme/tool",
+                stats,
+            }),
+        }
+    }
+
+    #[test]
+    fn github_buttons_with_counts() {
+        let h = render_landing(
+            &ctx(Some(RepoStats {
+                stars: 1_234,
+                forks: 1,
+            })),
+            &[],
+        );
+        assert!(h.contains(r#"href="https://github.com/acme/tool""#), "{h}");
+        assert!(h.contains(r#"href="https://github.com/acme/tool/fork""#));
+        assert!(h.contains(r#"<span class="gh-count">1.2k</span>"#));
+        assert!(h.contains(r#"<span class="gh-count">1</span>"#));
+        assert!(h.contains("Star Unity Project Sync on GitHub (1234 stars)"));
+        assert!(h.contains("Fork Unity Project Sync on GitHub (1 fork)"));
+        assert!(h.contains(">Source code</a>"));
+    }
+
+    #[test]
+    fn github_buttons_without_counts_or_repo() {
+        let h = render_landing(&ctx(None), &[]);
+        assert!(h.contains(r#"href="https://github.com/acme/tool/fork""#));
+        assert!(!h.contains("gh-count"));
+        assert!(h.contains(r#"aria-label="Star Unity Project Sync on GitHub""#));
+
+        let mut c = ctx(None);
+        c.github = None;
+        let h = render_not_found(&c, None);
+        assert!(!h.contains("github.com"));
+        assert!(!h.contains("gh-btn"));
     }
 
     #[test]

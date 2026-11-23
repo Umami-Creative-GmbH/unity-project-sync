@@ -4,6 +4,7 @@
 //! manually uploaded release folders (see README.md).
 
 mod assets;
+mod github;
 mod page;
 mod releases;
 mod routes;
@@ -11,8 +12,9 @@ mod util;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
+use crate::github::RepoStats;
 use crate::releases::ScanLog;
 
 /// Runtime configuration, read once from the environment.
@@ -24,11 +26,15 @@ pub struct Config {
     pub public_url: Option<String>,
     pub imprint_url: Option<String>,
     pub privacy_url: Option<String>,
+    /// `owner/name` of the GitHub repository linked in the header; `None` hides the links.
+    pub github_repo: Option<String>,
 }
 
 pub struct AppState {
     pub config: Config,
     pub scan_log: ScanLog,
+    /// Star and fork counts, kept fresh by [`github::spawn_refresh`].
+    pub repo_stats: RwLock<Option<RepoStats>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -38,7 +44,24 @@ impl AppState {
         Arc::new(AppState {
             config,
             scan_log: ScanLog::default(),
+            repo_stats: RwLock::new(None),
         })
+    }
+}
+
+/// `GITHUB_REPO`: unset means [`github::DEFAULT_REPO`], `off` hides the GitHub links.
+fn github_repo(value: Option<String>) -> Option<String> {
+    let Some(v) = value else {
+        return Some(github::DEFAULT_REPO.to_string());
+    };
+    let v = v.trim();
+    if v.eq_ignore_ascii_case("off") {
+        None
+    } else if github::valid_repo(v) {
+        Some(v.to_string())
+    } else {
+        warn!("GITHUB_REPO={v:?} is not an owner/name pair, hiding the GitHub links");
+        None
     }
 }
 
@@ -85,6 +108,7 @@ impl Config {
             public_url: clean_http_url("PUBLIC_URL", var("PUBLIC_URL"), true),
             imprint_url: clean_http_url("IMPRINT_URL", var("IMPRINT_URL"), false),
             privacy_url: clean_http_url("PRIVACY_URL", var("PRIVACY_URL"), false),
+            github_repo: github_repo(var("GITHUB_REPO")),
         };
         Ok((config, port))
     }
@@ -138,7 +162,9 @@ async fn main() {
         );
     }
 
-    let app = routes::router(AppState::new(config));
+    let state = AppState::new(config);
+    github::spawn_refresh(state.clone());
+    let app = routes::router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -160,7 +186,19 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_http_url;
+    use super::{clean_http_url, github_repo};
+
+    #[test]
+    fn github_repo_from_env() {
+        let g = |v: &str| github_repo(Some(v.to_string()));
+        assert_eq!(
+            github_repo(None).as_deref(),
+            Some("Umami-Creative-GmbH/unity-project-sync")
+        );
+        assert_eq!(g(" a/b ").as_deref(), Some("a/b"));
+        assert_eq!(g("OFF"), None);
+        assert_eq!(g("https://github.com/a/b"), None);
+    }
 
     #[test]
     fn cleans_urls() {

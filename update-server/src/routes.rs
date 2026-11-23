@@ -12,7 +12,7 @@ use semver::Version;
 use serde_json::json;
 use tower_http::services::ServeFile;
 
-use crate::page::{self, PageCtx};
+use crate::page::{self, GitHubLink, PageCtx};
 use crate::releases::{self, Release};
 use crate::util::encode_segment;
 use crate::{Config, SharedState, assets, warn};
@@ -116,11 +116,16 @@ fn file_url(base: &str, r: &Release) -> String {
     format!("{base}{}", file_path(r))
 }
 
-fn page_ctx<'a>(config: &'a Config, headers: &HeaderMap) -> PageCtx<'a> {
+fn page_ctx<'a>(state: &'a SharedState, headers: &HeaderMap) -> PageCtx<'a> {
+    let config = &state.config;
     PageCtx {
         base_url: base_url(config, headers),
         imprint_url: config.imprint_url.as_deref(),
         privacy_url: config.privacy_url.as_deref(),
+        github: config.github_repo.as_deref().map(|repo| GitHubLink {
+            repo,
+            stats: *state.repo_stats.read().unwrap_or_else(|e| e.into_inner()),
+        }),
     }
 }
 
@@ -156,13 +161,13 @@ fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
 }
 
 fn not_found_page(state: &SharedState, headers: &HeaderMap) -> Response {
-    let ctx = page_ctx(&state.config, headers);
+    let ctx = page_ctx(state, headers);
     html(StatusCode::NOT_FOUND, page::render_not_found(&ctx, None))
 }
 
 async fn landing(State(state): State<SharedState>, headers: HeaderMap) -> Response {
     let releases = load_releases(&state).await;
-    let ctx = page_ctx(&state.config, &headers);
+    let ctx = page_ctx(&state, &headers);
     html(StatusCode::OK, page::render_landing(&ctx, &releases))
 }
 
@@ -237,7 +242,7 @@ async fn latest_release(State(state): State<SharedState>, headers: HeaderMap) ->
 async fn download_latest(State(state): State<SharedState>, headers: HeaderMap) -> Response {
     let releases = load_releases(&state).await;
     let Some(r) = releases.first() else {
-        let ctx = page_ctx(&state.config, &headers);
+        let ctx = page_ctx(&state, &headers);
         return html(
             StatusCode::NOT_FOUND,
             page::render_not_found(&ctx, Some(page::NotFound::NoRelease)),
@@ -364,6 +369,7 @@ mod tests {
             public_url: public_url.map(str::to_string),
             imprint_url: Some("https://umami-creative.de/impressum".into()),
             privacy_url: None,
+            github_repo: Some(crate::github::DEFAULT_REPO.into()),
         }))
     }
 
@@ -800,6 +806,13 @@ mod tests {
         assert!(g.body.contains("https://umami-creative.de/impressum"));
         assert!(!g.body.contains("Privacy"));
         assert!(!g.body.contains("src=\"http"));
+        // GitHub links are plain links; counts are absent until the server fetched them.
+        assert!(
+            g.body.contains(
+                "href=\"https://github.com/Umami-Creative-GmbH/unity-project-sync/fork\""
+            )
+        );
+        assert!(!g.body.contains("gh-count"));
     }
 
     #[tokio::test]

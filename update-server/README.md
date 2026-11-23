@@ -10,6 +10,8 @@ Releases are plain folders that you build on your PC and upload into the contain
 
 The page is self-contained. The Geist font (SIL OFL 1.1, licence text at `/assets/Geist-OFL.txt`), the icon, CSS and JS are compiled into the binary, so nothing is loaded from third-party hosts. There are no cookies, no analytics and no IP logging.
 
+The header has GitHub-style **Star** and **Fork** buttons for the repository, with counts. The server itself fetches the counts from the GitHub API (`api.github.com/repos/<owner>/<name>`, unauthenticated, every 30 minutes, every 5 minutes after a failure) and keeps them in memory. Visitors' browsers never contact GitHub. Until the first fetch succeeds, the buttons are shown without counts. On narrow screens only Star is shown; the footer always links the source code.
+
 ## Release folder format
 
 `scripts/release.ps1` (in the repo root) builds and signs the app and writes `release/<version>/`. That folder holds exactly two files:
@@ -86,6 +88,7 @@ The landing page and the API send `Cache-Control: no-cache`. HTML pages carry a 
 | `PUBLIC_URL` | unset | Absolute base URL, e.g. `https://ups.umami-creative.app`. Used for the update and download URLs. When unset, the scheme comes from `X-Forwarded-Proto` (default `http`) and the host from `X-Forwarded-Host`, else `Host`. |
 | `IMPRINT_URL` | unset | Footer link "Imprint" (Impressum). Shown only when set. |
 | `PRIVACY_URL` | unset | Footer link "Privacy" (Datenschutz). Shown only when set. |
+| `GITHUB_REPO` | `Umami-Creative-GmbH/unity-project-sync` | `owner/name` for the Star/Fork buttons and the footer's "Source code" link. `off` hides them and stops the API calls. |
 
 URLs must be absolute `http(s)` URLs; anything else is ignored with a warning.
 
@@ -117,7 +120,7 @@ About the image:
 
 ## Coolify setup (one time)
 
-The repository is private, so use a GitHub App source (or a deploy key plus a webhook).
+The repository is public, but use a GitHub App source (or a deploy key plus a webhook) anyway, so that pushes trigger deploys.
 
 1. **Source.**
    - **GitHub App (recommended):** *Sources → + Add → GitHub App → Automated installation*. Set Organization to `Umami-Creative-GmbH`, and set the webhook endpoint to the public Coolify URL. Install it on **only this repository**. Then *+ New → Private Repository (with GitHub App)*.
