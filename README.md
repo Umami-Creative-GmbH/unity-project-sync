@@ -24,6 +24,22 @@ cd src-tauri; cargo test                # sync engine tests
 pnpm tauri build                        # release build and installer
 ```
 
+## Installer
+
+`pnpm tauri build` produces one self-contained setup file:
+
+```
+src-tauri\target\release\bundle\nsis\Unity Project Sync_<version>_x64-setup.exe
+```
+
+Copy that file to a coworker's PC and run it. There is nothing else to ship.
+
+- **No admin rights needed.** It installs for the current user into `%LOCALAPPDATA%\Unity Project Sync` and adds a Start menu entry and an uninstaller (*Settings → Apps*).
+- **WebView2:** Windows 11 and current Windows 10 already have it. If it is missing, the bundled bootstrapper installs it silently, which needs internet access once.
+- **Language:** English or German, picked from the Windows display language.
+- **Updating:** run the newer setup file over the old install; saved projects and settings are kept. Bump `version` in `src-tauri/tauri.conf.json` (and `package.json`/`Cargo.toml`) for each release. There is no auto-update.
+- **Unsigned:** the installer is not code-signed, so SmartScreen may show "Windows protected your PC". Click *More info → Run anyway*.
+
 **Debug throttle.** To watch the transfer chart on a fast disk, set `UPS_DEBUG_THROTTLE_MBPS` to a rate in MiB/s before `pnpm tauri dev`; it caps the total copy/verify throughput of a sync (all workers together):
 
 ```powershell
