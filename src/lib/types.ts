@@ -26,13 +26,14 @@ export interface SyncScope {
 
 /**
  * copy   = missing in target
- * update = size differs (or type conflict) → will be overwritten
+ * update = size differs (or type conflict, or a case-only rename) → will be overwritten / renamed
  * verify = same size, different mtime → contents compared at sync time; copied only if different
  * delete = exists in target (inside scope) but not in source
  */
 export type PlanAction = "copy" | "update" | "verify" | "delete";
 
-export type PlanReason = "new" | "size" | "mtime" | "type" | "extra";
+/** `case` = the name differs only in letter case: the target entry is renamed to the source casing. */
+export type PlanReason = "new" | "size" | "mtime" | "type" | "extra" | "case";
 
 export interface PlanEntry {
   /** Relative path with forward slashes, e.g. "Assets/Scenes/Main.unity". */
@@ -94,6 +95,10 @@ export interface SyncProgress {
   elapsedMs: number;
   currentFile: string | null;
   errors: number;
+  /** Items (files + folders) removed so far in the deletion phase. */
+  deleteDone: number;
+  /** Items (files + folders) the plan deletes. */
+  deleteTotal: number;
 }
 
 export interface SyncError {
@@ -112,8 +117,17 @@ export interface SyncReport {
   bytesWritten: number;
   durationMs: number;
   cancelled: boolean;
+  /** The first 1000 errors; `errorCount` is the real number. */
   errors: SyncError[];
+  errorCount: number;
 }
+
+/**
+ * Commands (see src/lib/api.ts). `opId` is chosen by the UI per scan/sync so that a cancel is tied
+ * to exactly one operation:
+ *   scan({ source, target, scope, opId }), run_sync({ planId, opId }), cancel_operation({ opId })
+ */
+export type OperationId = number;
 
 export const DEFAULT_SCOPE: SyncScope = {
   includeRootFiles: true,
