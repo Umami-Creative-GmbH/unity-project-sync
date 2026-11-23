@@ -2,6 +2,8 @@ export const APP_NAME = "Unity Project Sync";
 export const APP_AUTHOR = "Umami Creative GmbH";
 export const APP_TAGLINE = "Mirror the non-regenerable parts of Unity projects";
 export const SOURCE_URL = "https://github.com/Umami-Creative-GmbH/unity-project-sync";
+/** Landing page with the latest release (also serves the update checks). */
+export const WEBSITE_URL = "https://ups.umami-creative.app";
 export const COPYRIGHT = "© 2026 Umami Creative GmbH";
 
 /** The rendering engine from a user agent: "WebView2 131.0.2903.70", "WebKit 605.1.15", or null. */

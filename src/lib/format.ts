@@ -104,6 +104,11 @@ export function formatRelativeTime(epochMs: number, now: number = Date.now()): s
   return dateFormat.format(new Date(epochMs));
 }
 
+/** A date without the time, e.g. "23 Nov 2026" (locale-dependent). */
+export function formatDate(epochMs: number): string {
+  return dateFormat.format(new Date(epochMs));
+}
+
 export function formatDateTime(epochMs: number): string {
   return dateTimeFormat.format(new Date(epochMs));
 }
