@@ -51,5 +51,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU0NzAxMkNFMjc0RDA3MTIKUldRU0IwMG56aEp3Vk4vQzF1Z1pBTGRUK0lkenV1MW9TSXNiQW41NURaSTlEdnlhRnVUZUlUWUgK",
+      "endpoints": ["https://ups.umami-creative.app/api/update/{{target}}/{{arch}}/{{current_version}}"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -260,6 +260,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Settings in tauri.conf.json > plugins > updater. On Windows the plugin launches the NSIS
+        // installer and exits the app; in passive mode the installer relaunches it, so no process
+        // plugin is needed.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             inspect_project,
