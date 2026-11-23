@@ -272,3 +272,18 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
   await writeGate.assertWritable();
   await saveAppSettingsTo((await getStore()).store, settings);
 }
+
+/**
+ * Writes pending (debounced auto-save) changes to disk right away, e.g. before the app exits to
+ * install an update. Only when the file is writable this session; never throws.
+ */
+export async function flushSettings(): Promise<void> {
+  if (!storePromise) return;
+  try {
+    const { store } = await storePromise;
+    await writeGate.assertWritable();
+    await store.save();
+  } catch (e) {
+    console.warn("Could not save the settings file:", e);
+  }
+}
