@@ -68,6 +68,9 @@ const I_SUN: &str = r#"<path d="M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3
 const I_MOON: &str =
     r#"<path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/>"#;
 const I_INFO: &str = r#"<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"/><path d="M12 9h.01"/><path d="M11 12h1v4h1"/>"#;
+const I_LICENSE: &str = r#"<path d="M15 21h-9a3 3 0 0 1 -3 -3v-1h10v2a2 2 0 0 0 4 0v-14a2 2 0 1 1 2 2h-2m2 -4h-11a3 3 0 0 0 -3 3v11"/><path d="M9 7l4 0"/><path d="M9 11l4 0"/>"#;
+const I_SHIELD_LOCK: &str = r#"<path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/><path d="M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M12 12l0 2.5"/>"#;
+const I_EYE_OFF: &str = r#"<path d="M10.585 10.587a2 2 0 0 0 2.829 2.828"/><path d="M16.681 16.673a8.717 8.717 0 0 1 -4.681 1.327c-3.6 0 -6.6 -2 -9 -6c1.272 -2.12 2.712 -3.678 4.32 -4.674m2.86 -1.146a9.055 9.055 0 0 1 1.82 -.18c3.6 0 6.6 2 9 6c-.666 1.11 -1.379 2.067 -2.138 2.87"/><path d="M3 3l18 18"/>"#;
 const I_GIT_FORK: &str = r#"<path d="M10 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M5 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M15 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 8v2a2 2 0 0 0 2 2h6a2 2 0 0 0 2 -2v-2"/><path d="M12 12l0 4"/>"#;
 
 const FEATURES: [(&str, &str, &str); 6] = [
@@ -380,6 +383,13 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
             esc(gh.repo)
         );
     }
+    if let Some(gh) = &ctx.github {
+        let _ = writeln!(
+            s,
+            r#"<li><a href="https://github.com/{}/blob/main/LICENSE">MIT licence</a></li>"#,
+            esc(gh.repo)
+        );
+    }
     if let Some(u) = ctx.imprint_url {
         let _ = writeln!(s, r#"<li><a href="{}">Imprint</a></li>"#, esc(u));
     }
@@ -569,6 +579,56 @@ fn features() -> String {
     s
 }
 
+/// Licence and privacy promises. Keep the telemetry text in line with what the app really sends:
+/// its only request is the update check (src-tauri/tauri.conf.json > plugins > updater).
+fn open_and_private(ctx: &PageCtx) -> String {
+    let licence = match &ctx.github {
+        Some(gh) => format!(
+            r#"<a href="https://github.com/{}/blob/main/LICENSE">MIT licence</a>"#,
+            esc(gh.repo)
+        ),
+        None => "MIT licence".to_string(),
+    };
+    let source = match &ctx.github {
+        Some(gh) => format!(
+            r#" The full source code is <a href="https://github.com/{}">on GitHub</a>."#,
+            esc(gh.repo)
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"<section class="section" id="open" aria-labelledby="open-title">
+<div class="container">
+<div class="section-head">
+<p class="eyebrow">Open and private</p>
+<h2 id="open-title">Free software that minds its own business</h2>
+</div>
+<ul class="feature-grid" role="list">
+<li class="card feature">
+<span class="feature-icon">{i_licence}</span>
+<h3>MIT licensed</h3>
+<p>Free to use, change and share, at home or at work, under the {licence}.{source}</p>
+</li>
+<li class="card feature">
+<span class="feature-icon">{i_shield}</span>
+<h3>No hidden trackers</h3>
+<p>No ads, no analytics, no tracking code in the app. This site sets no cookies and loads nothing from other servers.</p>
+</li>
+<li class="card feature">
+<span class="feature-icon">{i_eye_off}</span>
+<h3>No telemetry</h3>
+<p>The app never reports what you sync or how you use it. Its only network request is the update check, which sends just its version and the Windows architecture.</p>
+</li>
+</ul>
+</div>
+</section>
+"#,
+        i_licence = icon(I_LICENSE),
+        i_shield = icon(I_SHIELD_LOCK),
+        i_eye_off = icon(I_EYE_OFF),
+    )
+}
+
 fn install(latest: Option<&Release>) -> String {
     let file_hint = match latest {
         Some(r) => format!("Use the button above to get <code>{}</code>.", esc(&r.file)),
@@ -673,6 +733,7 @@ pub fn render_landing(ctx: &PageCtx, releases: &[Release]) -> String {
     }
     main.push_str(&features());
     main.push_str(&screenshots());
+    main.push_str(&open_and_private(ctx));
     main.push_str(&install(latest));
     if releases.len() > 1 {
         main.push_str(&previous_versions(&releases[1..]));

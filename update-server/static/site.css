@@ -836,13 +836,19 @@ h2 {
   font-size: 1.0625rem;
 }
 
-.prose a {
+.prose a,
+.feature p a {
   text-decoration: underline;
   text-decoration-color: var(--border-strong);
   text-underline-offset: 3px;
 }
 
-.prose a:hover {
+.feature p a {
+  color: var(--foreground);
+}
+
+.prose a:hover,
+.feature p a:hover {
   text-decoration-color: currentColor;
 }
 

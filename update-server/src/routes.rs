@@ -841,6 +841,13 @@ mod tests {
             )
         );
         assert!(!g.body.contains("gh-count"));
+        // Licence and privacy section, plus the licence link in the footer.
+        assert!(g.body.contains("<h3>MIT licensed</h3>"));
+        assert!(g.body.contains("<h3>No hidden trackers</h3>"));
+        assert!(g.body.contains("<h3>No telemetry</h3>"));
+        let licence =
+            "href=\"https://github.com/Umami-Creative-GmbH/unity-project-sync/blob/main/LICENSE\"";
+        assert_eq!(g.body.matches(licence).count(), 2);
     }
 
     #[tokio::test]
