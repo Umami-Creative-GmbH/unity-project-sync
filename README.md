@@ -24,6 +24,18 @@
 
 Copying Unity projects between drives, backup folders, or machines is slow and noisy when gigabytes of regenerable `Library/`, `Temp/`, or `.git/` data get dragged along. **Unity Project Sync** is a lightweight desktop app for Windows (built with Tauri 2, Rust, and React) that mirrors only the parts of your Unity projects that actually matter — safely, in parallel, and with a full preview before anything is written or deleted.
 
+<p align="center">
+  <img src="docs/screenshots/project-overview.png" alt="Project overview: saved Unity projects with source and target paths, detected Unity versions, folder status and per-project Sync buttons" width="820" />
+  <br />
+  <em>Project overview: all source → target pairs at a glance, with Unity version detection and pre-flight checks.</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/transfer.png" alt="Transfer in progress: live throughput chart with a hover tooltip, transferred bytes, files, time left and per-project batch status" width="820" />
+  <br />
+  <em>Transfer: the live throughput chart doubles as the progress bar, with per-project batch status.</em>
+</p>
+
 ## Download & install
 
 Download the latest Windows (x64) installer from **[ups.umami-creative.app](https://ups.umami-creative.app)**.
