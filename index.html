@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unity Project Sync</title>
+    <script>
+      // Startup theme before the first paint (no light flash). The real setting lives in the
+      // settings store; "ups.theme" is only a hint mirrored by src/lib/theme.ts (THEME_HINT_KEY).
+      (function () {
+        var pref = "system";
+        try {
+          pref = localStorage.getItem("ups.theme") || "system";
+        } catch (e) {}
+        var dark = pref === "dark" || (pref !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("dark");
+      })();
+    </script>
   </head>
 
   <body>

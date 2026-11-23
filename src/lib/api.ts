@@ -11,14 +11,19 @@ import type {
   SyncProgress,
   SyncReport,
   SyncScope,
+  ThreadInfo,
 } from "@/lib/types";
 
 export const api = {
   inspectProject: (path: string) => invoke<ProjectInfo>("inspect_project", { path }),
   defaultScope: () => invoke<SyncScope>("default_scope"),
-  scan: (source: string, target: string, scope: SyncScope, opId: OperationId) =>
-    invoke<PlanSummary>("scan", { source, target, scope, opId }),
-  runSync: (planId: number, opId: OperationId) => invoke<SyncReport>("run_sync", { planId, opId }),
+  /** `threads`: worker threads (backend clamps to 1..32) or null for auto. */
+  scan: (source: string, target: string, scope: SyncScope, opId: OperationId, threads: number | null) =>
+    invoke<PlanSummary>("scan", { source, target, scope, opId, threads }),
+  runSync: (planId: number, opId: OperationId, threads: number | null) =>
+    invoke<SyncReport>("run_sync", { planId, opId, threads }),
+  /** What "Auto" threads means on this machine. */
+  threadInfo: () => invoke<ThreadInfo>("thread_info"),
   /** Releases stored scan plans that will not be run (unknown ids are ignored). */
   discardPlans: (planIds: number[]) => invoke<void>("discard_plans", { planIds }),
   /** Cancels operation `opId` (also when the backend has not started it yet). */

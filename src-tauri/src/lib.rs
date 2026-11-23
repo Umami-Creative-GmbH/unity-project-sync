@@ -7,7 +7,10 @@ mod scan;
 mod settings;
 mod shutdown;
 mod sync;
+mod threads;
 
+#[cfg(test)]
+mod bench;
 #[cfg(test)]
 mod tests;
 
@@ -18,7 +21,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use model::{PlanSummary, ProjectInfo, ScanProgress, SyncProgress, SyncReport, SyncScope};
+use model::{
+    PlanSummary, ProjectInfo, ScanProgress, SyncProgress, SyncReport, SyncScope, ThreadInfo,
+};
 use scan::Plan;
 
 /// Maximum number of scan plans kept at once; the oldest (lowest id) is evicted beyond that.
@@ -153,15 +158,17 @@ async fn scan(
     target: String,
     scope: SyncScope,
     op_id: u64,
+    threads: Option<i64>,
 ) -> Result<PlanSummary, String> {
     let inner = state.0.clone();
     let guard = BusyGuard::acquire(&inner, op_id)?;
+    let threads = crate::threads::resolve(threads);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let emit = |p: ScanProgress| {
             let _ = app.emit("scan-progress", Tagged { op_id, progress: p });
         };
-        let out = scan::scan(&source, &target, &scope, &inner.cancel, &emit)
+        let out = scan::scan(&source, &target, &scope, threads, &inner.cancel, &emit)
             .map_err(|e| e.to_string())?;
         let mut summary = out.summary;
         summary.plan_id = inner.store_plan(out.plan);
@@ -177,20 +184,28 @@ async fn run_sync(
     state: State<'_, AppState>,
     plan_id: u64,
     op_id: u64,
+    threads: Option<i64>,
 ) -> Result<SyncReport, String> {
     let inner = state.0.clone();
     let guard = BusyGuard::acquire(&inner, op_id)?;
     // Released after this run: a new scan is required for the next sync of this project.
     let plan = inner.take_plan(plan_id)?;
+    let threads = crate::threads::resolve(threads);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         let emit = |p: SyncProgress| {
             let _ = app.emit("sync-progress", Tagged { op_id, progress: p });
         };
-        sync::execute(&plan, &inner.cancel, sync::default_threads(), &emit)
+        sync::execute(&plan, &inner.cancel, threads, &emit)
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Logical CPUs, what "Auto" resolves to, and the largest accepted thread count.
+#[tauri::command]
+fn thread_info() -> ThreadInfo {
+    threads::thread_info()
 }
 
 /// Drops scan plans the UI no longer needs (unknown ids are ignored).
@@ -251,6 +266,7 @@ pub fn run() {
             default_scope,
             scan,
             run_sync,
+            thread_info,
             discard_plans,
             cancel_operation,
             prepare_settings,

@@ -75,6 +75,8 @@ export interface PlanSummary {
   /** Non-fatal issues found while scanning (skipped symlinks, unreadable entries, ...). */
   warnings: string[];
   scanMs: number;
+  /** Worker threads the scan used (directory walk). */
+  scanThreads: number;
 }
 
 /** Payload of the `scan-progress` event. */
@@ -113,6 +115,11 @@ export interface SyncProgress {
   deleteDone: number;
   /** Items (files + folders) the plan deletes. */
   deleteTotal: number;
+  /**
+   * Worker threads this run actually uses: the most any phase starts (deletion only when
+   * something is deleted; copy/verify never more than there are files; at least 1).
+   */
+  threads: number;
 }
 
 export interface SyncError {
@@ -134,14 +141,29 @@ export interface SyncReport {
   /** The first 1000 errors; `errorCount` is the real number. */
   errors: SyncError[];
   errorCount: number;
+  /** Worker threads the run actually used (see SyncProgress.threads). */
+  threads: number;
+}
+
+/** Result of `thread_info()`: what "Auto" means on this machine. */
+export interface ThreadInfo {
+  /** `std::thread::available_parallelism()`. */
+  logicalCpus: number;
+  /** Threads used for a `null` (auto) request: logical CPUs clamped to 1..16. */
+  autoThreads: number;
+  /** Upper bound the backend clamps any request to (32). */
+  maxThreads: number;
 }
 
 /**
  * Commands (see src/lib/api.ts). `opId` is chosen by the UI per scan/sync so that a cancel is tied
  * to exactly one operation:
- *   scan({ source, target, scope, opId }), run_sync({ planId, opId }), cancel_operation({ opId }),
+ *   scan({ source, target, scope, opId, threads }), run_sync({ planId, opId, threads }),
+ *   cancel_operation({ opId }), thread_info(),
  *   discard_plans({ planIds }) — releases stored scan plans that will not be run,
  *   prepare_settings() / backup_settings() — protect settings.json (see src/lib/store.ts).
+ * `threads`: number of worker threads (clamped to 1..32 by the backend) or null for auto
+ * (logical CPUs clamped to 1..16); see effectiveThreads() in src/lib/settings.ts.
  * The `scan-progress` / `sync-progress` events carry the `opId` of their operation.
  * The backend keeps several scan plans at once (one per scanned project) until they run or are
  * discarded; `run_sync` consumes its plan.
@@ -196,4 +218,17 @@ export interface SyncProject {
   /** The user confirmed a non-empty, non-Unity target. Reset whenever the target changes. */
   targetAck: boolean;
   lastRun: ProjectLastRun | null;
+}
+
+export type ThemePreference = "system" | "light" | "dark";
+
+/** Fixed thread count (2..32) or "auto" (the backend picks: logical CPUs clamped to 1..16). */
+export type ThreadSetting = "auto" | number;
+
+/** App-wide preferences, persisted in the store under `appSettings` (see src/lib/settings.ts). */
+export interface AppSettings {
+  /** Off = exactly one thread for scan, copy, verify and delete (HDD / network share friendly). */
+  multiThreaded: boolean;
+  threads: ThreadSetting;
+  theme: ThemePreference;
 }

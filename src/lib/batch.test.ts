@@ -48,6 +48,7 @@ function plan(partial: Partial<PlanSummary> = {}): PlanSummary {
     totalEntries,
     warnings: [],
     scanMs: 5,
+    scanThreads: 4,
     ...partial,
   };
 }
@@ -65,6 +66,7 @@ function report(partial: Partial<SyncReport> = {}): SyncReport {
     cancelled: false,
     errors: [],
     errorCount: 0,
+    threads: 4,
     ...partial,
   };
 }
@@ -85,6 +87,7 @@ function progress(partial: Partial<SyncProgress> = {}): SyncProgress {
     errors: 0,
     deleteDone: 0,
     deleteTotal: 0,
+    threads: 4,
     ...partial,
   };
 }

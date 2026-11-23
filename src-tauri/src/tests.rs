@@ -52,10 +52,20 @@ impl Env {
 }
 
 fn try_scan(src: &Path, tgt: &Path, scope: &SyncScope) -> Result<ScanOutput, ScanError> {
+    scan_with(src, tgt, scope, 4)
+}
+
+fn scan_with(
+    src: &Path,
+    tgt: &Path,
+    scope: &SyncScope,
+    threads: usize,
+) -> Result<ScanOutput, ScanError> {
     scan(
         src.to_str().unwrap(),
         tgt.to_str().unwrap(),
         scope,
+        threads,
         &AtomicBool::new(false),
         &|_: ScanProgress| {},
     )
@@ -418,6 +428,7 @@ fn cancelled_scan_and_sync() {
         env.src.to_str().unwrap(),
         env.tgt.to_str().unwrap(),
         &SyncScope::default(),
+        1,
         &cancel,
         &|_: ScanProgress| {},
     );
@@ -1317,6 +1328,7 @@ fn wire_payloads_match_types_ts() {
             "totalEntries",
             "warnings",
             "scanMs",
+            "scanThreads",
         ],
     );
     expect(&summary["scope"], &["includeRootFiles", "folders"]);
@@ -1341,6 +1353,7 @@ fn wire_payloads_match_types_ts() {
             "cancelled",
             "errors",
             "errorCount",
+            "threads",
         ],
     );
     let info = serde_json::to_value(crate::project::inspect_project("")).unwrap();
@@ -1372,6 +1385,7 @@ fn wire_payloads_match_types_ts() {
         errors: 0,
         delete_done: 0,
         delete_total: 0,
+        threads: 1,
     };
     let progress = serde_json::to_value(progress).unwrap();
     expect(
@@ -1390,6 +1404,7 @@ fn wire_payloads_match_types_ts() {
             "errors",
             "deleteDone",
             "deleteTotal",
+            "threads",
         ],
     );
     assert_eq!(progress["phase"], "finalizing");
@@ -1428,4 +1443,374 @@ fn ui_entries_are_capped() {
         paths.windows(2).all(|w| w[0] <= w[1]),
         "entries sorted by path"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Thread count: plans and results never depend on it.
+// ---------------------------------------------------------------------------------------------
+
+/// xorshift64*: deterministic pseudo-random choices for generated trees.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+    }
+
+    fn bytes(&mut self, max: usize) -> Vec<u8> {
+        let n = self.below(max + 1);
+        (0..n).map(|_| self.below(256) as u8).collect()
+    }
+}
+
+fn set_read_only(path: &Path) {
+    let mut perms = fs::metadata(path).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(path, perms).unwrap();
+}
+
+/// Clears read-only flags below `root` (so the temp dir can be removed).
+fn clear_read_only(root: &Path) {
+    for e in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        if !e.file_type().is_symlink() {
+            let _ = crate::fsutil::make_writable(e.path());
+        }
+    }
+}
+
+/// Builds a pseudo-random source/target pair: nested folders, new / unchanged / verify / update
+/// files, case-only differences, type conflicts, read-only files, extra target files and trees,
+/// and (when the OS allows it) links in both trees. Entries named `LNK*` are links.
+fn random_pair(env: &Env, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let outside = env.tgt.parent().unwrap().join("outside");
+    write(&outside.join("precious.txt"), b"never touched", T0);
+
+    let mut dirs: Vec<String> = vec!["Assets".into(), "Packages".into(), "ProjectSettings".into()];
+    for i in 0..40 {
+        let parent = dirs[rng.below(dirs.len())].clone();
+        if parent.matches('/').count() < 4 {
+            dirs.push(format!("{parent}/D{i}"));
+        }
+    }
+    for (i, d) in dirs.iter().enumerate() {
+        for j in 0..rng.below(7) {
+            let rel = format!("{d}/f{i}_{j}.txt");
+            let content = rng.bytes(64);
+            write(&env.s(&rel), &content, T0);
+            match rng.below(9) {
+                0 => {} // new
+                1 => write(&env.t(&rel), &content, T0),
+                2 => write(&env.t(&rel), &content, T0 - 100), // verify
+                3 => write(&env.t(&rel), &[b'u'; 100], T0),   // update
+                4 => {
+                    // Case-only difference (a rename on case-insensitive volumes).
+                    let upper = format!("{d}/F{i}_{j}.TXT");
+                    write(&env.t(&upper), &content, T0);
+                }
+                5 => write(&env.t(&format!("{rel}/inner.txt")), b"dir here", T0), // type
+                6 => {
+                    write(&env.t(&rel), &content, T0 - 100);
+                    set_read_only(&env.t(&rel));
+                    set_read_only(&env.s(&rel));
+                }
+                7 => {
+                    write(&env.t(&rel), b"stale", T0 - 5000);
+                    set_read_only(&env.t(&rel));
+                }
+                _ => write(&env.t(&rel), &content, T0 + 1), // within the mtime tolerance
+            }
+        }
+    }
+    // Extra target files and trees (deleted), some read-only.
+    for i in 0..20 {
+        let parent = dirs[rng.below(dirs.len())].clone();
+        if rng.below(2) == 0 {
+            let p = env.t(&format!("{parent}/extra{i}.bin"));
+            write(&p, &rng.bytes(32), T0);
+            if i % 3 == 0 {
+                set_read_only(&p);
+            }
+        } else {
+            for k in 0..rng.below(5) + 1 {
+                let p = env.t(&format!("{parent}/X{i}/y{}/z{k}.txt", k % 2));
+                write(&p, b"z", T0);
+                if k == 0 {
+                    set_read_only(&p);
+                }
+            }
+        }
+    }
+    // A source folder where the target has a file, and a differently cased target folder.
+    write(&env.s("Assets/TypeDir/a.txt"), b"a", T0);
+    write(&env.t("Assets/TypeDir"), b"file", T0);
+    write(&env.s("Assets/CaseDir/Inner/x.txt"), b"x", T0);
+    write(&env.t("Assets/casedir/inner/x.txt"), b"x", T0);
+    write(&env.s("README.md"), b"readme", T0);
+    write(&env.t("old-root.txt"), b"old", T0);
+    // Links: in the source (skipped), in the target (left alone), inside a deleted tree.
+    fs::create_dir_all(env.t("Assets/X_links")).unwrap();
+    if dir_link(&outside, &env.s("Assets/LNK_src")) {
+        write(&env.t("Assets/LNK_src/mine.txt"), b"protected", T0);
+        assert!(dir_link(&outside, &env.t("Assets/LNK_tgt")));
+        assert!(dir_link(&outside, &env.t("Assets/X_links/LNK_in")));
+    }
+}
+
+/// The plan and summary of two scans of the same trees, ignoring timing and thread count.
+fn assert_same_plan(a: &ScanOutput, b: &ScanOutput, what: &str) {
+    assert_eq!(format!("{:#?}", a.plan), format!("{:#?}", b.plan), "{what}");
+    let (mut sa, mut sb) = (a.summary.clone(), b.summary.clone());
+    sa.scan_ms = 0;
+    sb.scan_ms = 0;
+    sa.scan_threads = 0;
+    sb.scan_threads = 0;
+    assert_eq!(sa, sb, "{what}");
+}
+
+#[test]
+fn plans_and_results_do_not_depend_on_the_thread_count() {
+    let scope = SyncScope::default();
+    let no_links = |rel: &str, _: bool| !rel.contains("LNK");
+    for seed in 1..=5 {
+        let one_env = Env::new();
+        random_pair(&one_env, seed);
+        let one = scan_with(&one_env.src, &one_env.tgt, &scope, 1).unwrap();
+        assert_eq!(one.summary.scan_threads, 1);
+        assert!(
+            one.summary.total_entries > 20,
+            "seed {seed}: a meaningful plan"
+        );
+        assert!(!one.plan.case_renames.is_empty() || !temp_is_case_insensitive(&one_env));
+        if fs::symlink_metadata(one_env.s("Assets/LNK_src")).is_ok() {
+            for name in ["LNK_src", "LNK_tgt", "LNK_in"] {
+                assert!(
+                    one.summary.warnings.iter().any(|w| w.contains(name)),
+                    "seed {seed}: {name}: {:?}",
+                    one.summary.warnings
+                );
+            }
+        } else {
+            eprintln!("link creation not permitted here; links not covered");
+        }
+        for threads in [2, 8, 32] {
+            let many = scan_with(&one_env.src, &one_env.tgt, &scope, threads).unwrap();
+            assert_eq!(many.summary.scan_threads as usize, threads);
+            assert_same_plan(&one, &many, &format!("seed {seed}, {threads} threads"));
+        }
+        // Out-of-range requests are clamped.
+        let clamped = scan_with(&one_env.src, &one_env.tgt, &scope, 500).unwrap();
+        assert_eq!(clamped.summary.scan_threads, 32);
+        let clamped = scan_with(&one_env.src, &one_env.tgt, &scope, 0).unwrap();
+        assert_eq!(clamped.summary.scan_threads, 1);
+
+        // Executing with 1 or 8 threads reaches the same target state.
+        let many_env = Env::new();
+        random_pair(&many_env, seed);
+        let many = scan_with(&many_env.src, &many_env.tgt, &scope, 8).unwrap();
+        let r1 = execute(&one.plan, &AtomicBool::new(false), 1, &|_: SyncProgress| {});
+        let r8 = execute(
+            &many.plan,
+            &AtomicBool::new(false),
+            8,
+            &|_: SyncProgress| {},
+        );
+        assert!(r1.errors.is_empty(), "seed {seed}: {:?}", r1.errors);
+        assert!(r8.errors.is_empty(), "seed {seed}: {:?}", r8.errors);
+        assert_eq!((r1.threads, r8.threads), (1, 8));
+        let strip = |mut r: SyncReport| {
+            r.duration_ms = 0;
+            r.threads = 0;
+            r
+        };
+        assert_eq!(strip(r1), strip(r8), "seed {seed}");
+        assert_snap_eq(
+            &snapshot(&one_env.tgt, &no_links),
+            &snapshot(&many_env.tgt, &no_links),
+            0,
+            &format!("seed {seed}: target after 1 vs 8 threads"),
+        );
+        assert_snap_eq(
+            &snapshot(&one_env.src, &no_links),
+            &snapshot(&one_env.tgt, &|rel, is_dir| {
+                no_links(rel, is_dir) && rel != "old-root.txt"
+            }),
+            2,
+            &format!("seed {seed}: mirror"),
+        );
+        assert!(
+            one_env
+                .tgt
+                .parent()
+                .unwrap()
+                .join("outside/precious.txt")
+                .exists()
+        );
+        assert_fully_unchanged(&one_env, &scope);
+        assert_fully_unchanged(&many_env, &scope);
+        for env in [&one_env, &many_env] {
+            clear_read_only(&env.src);
+            clear_read_only(&env.tgt);
+        }
+    }
+}
+
+/// Builds `n` extra target trees (with read-only files and nested folders) for deletion tests.
+fn extra_trees(env: &Env, n: usize) -> u64 {
+    let mut files = 0;
+    for i in 0..n {
+        for j in 0..20 {
+            let p = env.t(&format!("Assets/Gone{i}/a{}/b{}/f{j}.txt", j % 3, j % 2));
+            write(&p, b"gone", T0);
+            if j % 7 == 0 {
+                set_read_only(&p);
+            }
+            files += 1;
+        }
+        let p = env.t(&format!("Assets/gone-file{i}.txt"));
+        write(&p, b"gone", T0);
+        files += 1;
+    }
+    files
+}
+
+fn count_files(root: &Path) -> u64 {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .count() as u64
+}
+
+#[test]
+fn parallel_deletion_is_complete_and_accurate() {
+    let env = Env::new();
+    write(&env.s("Assets/keep.txt"), b"keep", T0);
+    write(&env.t("Assets/keep.txt"), b"keep", T0);
+    let files = extra_trees(&env, 40);
+    // One huge tree: split across the workers by its children.
+    for k in 0..400 {
+        write(
+            &env.t(&format!("Assets/Huge/d{}/f{k}.txt", k % 25)),
+            b"h",
+            T0,
+        );
+    }
+    let files = files + 400;
+    let out = env.scan(&SyncScope::default());
+    assert_eq!(out.summary.delete.files, files);
+    assert_eq!(out.plan.delete_dirs.len(), 41);
+    assert_eq!(out.plan.delete_files.len(), 40);
+
+    let events = Mutex::new(Vec::new());
+    let report = execute(&out.plan, &AtomicBool::new(false), 8, &|p: SyncProgress| {
+        events.lock().unwrap().push(p)
+    });
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.threads, 8);
+    assert_eq!(report.deleted_files, files);
+    assert_eq!(report.deleted_dirs, out.summary.delete.dirs);
+    let events = events.into_inner().unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.threads, 8);
+    assert_eq!(last.delete_done, last.delete_total);
+    assert_eq!(
+        last.delete_total,
+        out.summary.delete.files + out.summary.delete.dirs
+    );
+    assert!(
+        events
+            .windows(2)
+            .all(|w| w[0].delete_done <= w[1].delete_done)
+    );
+    assert!(events.iter().all(|e| e.delete_done <= e.delete_total));
+    assert_eq!(names_in(&env.t("Assets")), ["keep.txt"]);
+    assert_fully_unchanged(&env, &SyncScope::default());
+}
+
+/// `threads` reports the workers actually started, not the requested setting.
+#[test]
+fn reports_the_worker_threads_actually_used() {
+    let env = Env::new();
+    write(&env.s("Assets/a.txt"), b"a", T0);
+    write(&env.s("Assets/b.txt"), b"b", T0);
+    let out = env.scan(&SyncScope::default());
+    assert_eq!(out.plan.transfers.len(), 2);
+    assert!(out.plan.delete_files.is_empty() && out.plan.delete_dirs.is_empty());
+    let last = Mutex::new(None);
+    let report = execute(
+        &out.plan,
+        &AtomicBool::new(false),
+        16,
+        &|p: SyncProgress| *last.lock().unwrap() = Some(p),
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.threads, 2);
+    assert_eq!(last.into_inner().unwrap().unwrap().threads, 2);
+
+    // Something to delete: the delete pool has every requested worker.
+    write(&env.t("Assets/gone.txt"), b"x", T0);
+    let out = env.scan(&SyncScope::default());
+    assert!(out.plan.transfers.is_empty());
+    let report = execute(&out.plan, &AtomicBool::new(false), 6, &|_: SyncProgress| {});
+    assert_eq!(report.threads, 6);
+
+    // Nothing to do: the calling thread only.
+    let out = env.scan(&SyncScope::default());
+    let report = execute(
+        &out.plan,
+        &AtomicBool::new(false),
+        16,
+        &|_: SyncProgress| {},
+    );
+    assert_eq!(report.threads, 1);
+}
+
+#[test]
+fn parallel_deletion_can_be_cancelled() {
+    let env = Env::new();
+    write(&env.s("Assets/new.txt"), b"new", T0);
+    let files = extra_trees(&env, 60);
+    let out = env.scan(&SyncScope::default());
+    assert_eq!(out.summary.delete.files, files);
+
+    // Cancelled before the start: nothing is removed.
+    let report = execute(&out.plan, &AtomicBool::new(true), 8, &|_: SyncProgress| {});
+    assert!(report.cancelled);
+    assert_eq!(
+        (report.deleted_files, report.deleted_dirs, report.copied),
+        (0, 0, 0)
+    );
+    assert_eq!(count_files(&env.t("Assets")), files);
+
+    // Cancelled from the first progress event: the report matches what is gone.
+    let cancel = AtomicBool::new(false);
+    let report = execute(&out.plan, &cancel, 8, &|p: SyncProgress| {
+        assert!(p.delete_done <= p.delete_total);
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert!(report.cancelled);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        report.deleted_files + count_files(&env.t("Assets")) - report.copied,
+        files
+    );
+    assert!(!env.t("Assets/new.txt").exists() || report.copied == 1);
+
+    // A later run finishes the job.
+    let out = env.scan(&SyncScope::default());
+    let report = execute(&out.plan, &AtomicBool::new(false), 8, &|_: SyncProgress| {});
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(names_in(&env.t("Assets")), ["new.txt"]);
 }

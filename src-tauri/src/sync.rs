@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::fsutil::{
     Removed, TreeRemove, join_rel, key_of, last_rel, make_writable, mtime_of, parent_rel,
-    rel_string, remove_dir_cancellable, remove_dir_robust, remove_file_robust, self_and_ancestors,
+    rel_string, remove_dir_parallel, remove_dir_robust, remove_file_robust, self_and_ancestors,
     set_mtime,
 };
 use crate::model::{MAX_REPORTED_ERRORS, SyncError, SyncPhase, SyncProgress, SyncReport};
@@ -36,13 +36,6 @@ const SPEED_WARMUP_SECS: f64 = 0.3;
 const MAX_ETA_SECS: f64 = 360_000.0;
 /// `set_current` is updated every this many entries while a folder tree is deleted.
 const DELETE_CURRENT_EVERY: u64 = 64;
-
-pub fn default_threads() -> usize {
-    thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(1, 8)
-}
 
 enum OpError {
     Cancelled,
@@ -436,10 +429,13 @@ struct Totals {
     files: u64,
     /// Items (files + folders) the deletion phase removes.
     deletes: u64,
+    /// Most worker threads any phase of the run starts (see [`used_threads`]).
+    threads: u32,
 }
 
 /// Runs the plan. Never panics on I/O errors: they are collected per file in the report.
-/// `progress` is called ~10x per second and once at the end.
+/// `threads` (clamped to 1..=32) bounds the deletion, copy and verify workers; 1 runs every
+/// phase sequentially. `progress` is called ~10x per second and once at the end.
 pub fn execute(
     plan: &Plan,
     cancel: &AtomicBool,
@@ -447,6 +443,9 @@ pub fn execute(
     progress: &(dyn Fn(SyncProgress) + Sync),
 ) -> SyncReport {
     let started = Instant::now();
+    let threads = crate::threads::clamp(threads);
+    // Reported (progress + report): the workers actually started, not the setting.
+    let used = used_threads(plan, threads) as u32;
     let shared = Shared::new(cancel);
     let totals = Totals {
         bytes: plan.total_bytes(),
@@ -459,6 +458,7 @@ pub fn execute(
                 .iter()
                 .map(|d| 1 + d.nested_files + d.nested_dirs)
                 .sum::<u64>(),
+        threads: used,
     };
 
     let (tx, rx) = mpsc::channel::<()>();
@@ -485,6 +485,7 @@ pub fn execute(
         cancelled: cancel.load(Ordering::Relaxed),
         errors,
         error_count: shared.error_count.into_inner(),
+        threads: used,
     }
 }
 
@@ -579,6 +580,7 @@ fn reporter(
             errors: sh.error_count.load(Ordering::Relaxed),
             delete_done: sh.delete_done.load(Ordering::Relaxed),
             delete_total: totals.deletes,
+            threads: totals.threads,
         });
         if finished {
             break;
@@ -599,34 +601,20 @@ fn work(plan: &Plan, sh: &Shared, threads: usize) {
         return;
     }
 
-    // 1) Deletions.
-    for f in &plan.delete_files {
+    // 1) Deletions: the roots are independent (never nested), so files and folder trees are
+    //    removed by `threads` workers; a large tree is split across them by its children.
+    if !plan.delete_files.is_empty() || !plan.delete_dirs.is_empty() {
+        let pool = match crate::threads::pool(threads, "delete") {
+            Ok(pool) => pool,
+            Err(e) => {
+                sh.error("", format!("Cannot start the worker threads: {e}"));
+                sh.set_phase(SyncPhase::Finalizing);
+                return;
+            }
+        };
+        pool.install(|| delete_all(plan, sh));
         if sh.stopped() {
             return;
-        }
-        delete_file(plan, f, sh);
-        sh.delete_done.fetch_add(1, Ordering::Relaxed);
-        if f.conflict {
-            sh.done_files.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    for d in &plan.delete_dirs {
-        if sh.stopped() {
-            return;
-        }
-        let planned = 1 + d.nested_files + d.nested_dirs;
-        let before = sh.delete_done.load(Ordering::Relaxed);
-        let stopped = delete_dir(plan, d, sh);
-        if stopped {
-            return;
-        }
-        // Reconcile planned and actual counts so the deletion bar always reaches its total.
-        let done = sh
-            .delete_done
-            .load(Ordering::Relaxed)
-            .saturating_sub(before);
-        if done < planned {
-            sh.delete_done.fetch_add(planned - done, Ordering::Relaxed);
         }
     }
 
@@ -681,7 +669,7 @@ fn work(plan: &Plan, sh: &Shared, threads: usize) {
 
     // 4) Files, largest first, pulled from a shared queue by a bounded set of workers.
     let next = AtomicUsize::new(0);
-    let workers = threads.max(1).min(plan.transfers.len());
+    let workers = copy_workers(threads, plan.transfers.len());
     thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
@@ -713,6 +701,35 @@ fn work(plan: &Plan, sh: &Shared, threads: usize) {
     sh.set_phase(SyncPhase::Finalizing);
 }
 
+/// Runs the deletion phase on the current rayon pool.
+fn delete_all(plan: &Plan, sh: &Shared) {
+    use rayon::prelude::*;
+
+    plan.delete_files.par_iter().for_each(|f| {
+        if sh.stopped() {
+            return;
+        }
+        delete_file(plan, f, sh);
+        sh.delete_done.fetch_add(1, Ordering::Relaxed);
+        if f.conflict {
+            sh.done_files.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    // One task per tree, so a big tree never waits behind small ones in the same chunk.
+    plan.delete_dirs.par_iter().with_max_len(1).for_each(|d| {
+        if sh.stopped() {
+            return;
+        }
+        let planned = 1 + d.nested_files + d.nested_dirs;
+        // Reconcile planned and actual counts so the deletion bar always reaches its total.
+        if let Some(done) = delete_dir(plan, d, sh)
+            && done < planned
+        {
+            sh.delete_done.fetch_add(planned - done, Ordering::Relaxed);
+        }
+    });
+}
+
 fn delete_file(plan: &Plan, f: &FileDelete, sh: &Shared) {
     if !plan.in_scope(&f.rel) {
         sh.error(
@@ -738,61 +755,109 @@ fn delete_file(plan: &Plan, f: &FileDelete, sh: &Shared) {
     }
 }
 
-/// Deletes one planned folder tree entry by entry. Returns true when the run was stopped.
-fn delete_dir(plan: &Plan, d: &DirDelete, sh: &Shared) -> bool {
+/// What [`delete_dir`] does once the entry-by-entry removal of a tree has returned.
+#[derive(Debug)]
+enum AfterTree {
+    Done,
+    Stopped,
+    /// Part of the tree failed and the run was stopped (user cancel / fatal abort).
+    StoppedWithError(io::Error),
+    /// Part of the tree failed: retry the rest with the robust (uncancellable) removal.
+    Fallback,
+}
+
+/// `stopped` is the run's own stop flag, checked after the walk: an `Err` wins over sibling
+/// `Stopped` results (see `fsutil::combine`), so the result alone cannot tell a cancel apart.
+fn after_tree_removal(result: io::Result<TreeRemove>, stopped: bool) -> AfterTree {
+    match result {
+        Ok(TreeRemove::Done) => AfterTree::Done,
+        Ok(TreeRemove::Stopped) => AfterTree::Stopped,
+        Err(e) if stopped => AfterTree::StoppedWithError(e),
+        Err(_) => AfterTree::Fallback,
+    }
+}
+
+/// Copy/verify workers [`work`] starts for `transfers` files (never more than there are files;
+/// 0 when there is nothing to transfer).
+fn copy_workers(threads: usize, transfers: usize) -> usize {
+    threads.max(1).min(transfers)
+}
+
+/// The most worker threads any phase of the run starts: the delete pool (only built when there
+/// is something to delete) has `threads` workers, the copy phase [`copy_workers`]; a run with
+/// nothing to do still counts the calling thread.
+fn used_threads(plan: &Plan, threads: usize) -> usize {
+    let has_deletes = !plan.delete_files.is_empty() || !plan.delete_dirs.is_empty();
+    let copy = copy_workers(threads, plan.transfers.len());
+    if has_deletes { threads.max(copy) } else { copy }.max(1)
+}
+
+/// Deletes one planned folder tree entry by entry (its subtrees in parallel on the current
+/// rayon pool). Returns the number of entries it reported to `delete_done`, or `None` when the
+/// run was stopped.
+fn delete_dir(plan: &Plan, d: &DirDelete, sh: &Shared) -> Option<u64> {
     if !plan.in_scope(&d.rel) {
         sh.error(
             &d.rel,
             "Refusing to delete a path outside the sync scope".into(),
         );
-        return false;
+        return Some(0);
     }
     if let Err(msg) = sh.links.check(&plan.target, &d.rel, false) {
         sh.error(&d.rel, msg);
-        return false;
+        return Some(0);
     }
     sh.set_current(&d.rel);
     let path = join_rel(&plan.target, &d.rel);
     // The root of a type-conflict dir is replaced by a file (counted as an update).
     let (planned_files, planned_dirs) = (d.nested_files, d.nested_dirs + u64::from(!d.conflict));
-    let (mut files, mut dirs, mut seen) = (0u64, 0u64, 0u64);
-    let result = remove_dir_cancellable(&path, &|| sh.stopped(), |p, kind| {
+    let (files, dirs, seen) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    let result = remove_dir_parallel(&path, &|| sh.stopped(), &|p, kind| {
         sh.delete_done.fetch_add(1, Ordering::Relaxed);
-        seen += 1;
-        if seen % DELETE_CURRENT_EVERY == 0
+        let n = seen.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % DELETE_CURRENT_EVERY == 0
             && let Some(rel) = rel_string(&plan.target, p)
         {
             sh.set_current(&rel);
         }
         match kind {
             Removed::File => {
-                files += 1;
+                files.fetch_add(1, Ordering::Relaxed);
                 sh.deleted_files.fetch_add(1, Ordering::Relaxed);
             }
             Removed::Dir if d.conflict && p == path => {}
             Removed::Dir => {
-                dirs += 1;
+                dirs.fetch_add(1, Ordering::Relaxed);
                 sh.deleted_dirs.fetch_add(1, Ordering::Relaxed);
             }
             Removed::Link => {}
         }
     });
-    match result {
-        Ok(TreeRemove::Done) => false,
-        Ok(TreeRemove::Stopped) => true,
-        Err(_) => match remove_dir_robust(&path) {
-            Ok(()) => {
-                sh.deleted_files
-                    .fetch_add(planned_files.saturating_sub(files), Ordering::Relaxed);
-                sh.deleted_dirs
-                    .fetch_add(planned_dirs.saturating_sub(dirs), Ordering::Relaxed);
-                false
-            }
-            Err(e) => {
+    let seen = seen.into_inner();
+    match after_tree_removal(result, sh.stopped()) {
+        AfterTree::Done => Some(seen),
+        AfterTree::Stopped => None,
+        AfterTree::StoppedWithError(e) => {
+            // Cancelled while (or after) part of the tree failed: keep the error, but never run
+            // the uncancellable remove_dir_all fallback and never reconcile the bar to 100%.
+            sh.error(&d.rel, format!("Delete failed: {e}"));
+            None
+        }
+        AfterTree::Fallback => {
+            if let Err(e) = remove_dir_robust(&path) {
                 sh.error(&d.rel, format!("Delete failed: {e}"));
-                false
+            } else {
+                sh.deleted_files.fetch_add(
+                    planned_files.saturating_sub(files.into_inner()),
+                    Ordering::Relaxed,
+                );
+                sh.deleted_dirs.fetch_add(
+                    planned_dirs.saturating_sub(dirs.into_inner()),
+                    Ordering::Relaxed,
+                );
             }
-        },
+            Some(seen)
+        }
     }
 }
 
@@ -1100,6 +1165,36 @@ mod tests {
         assert_eq!(errors.len(), MAX_REPORTED_ERRORS + 1);
         assert_eq!(errors.last().unwrap().message, "Sync stopped");
         assert_eq!(sh.error_count.into_inner(), 5001);
+    }
+
+    /// A tree that failed during a cancel is never handed to the uncancellable fallback.
+    #[test]
+    fn a_cancel_after_a_tree_error_skips_the_fallback() {
+        let err = || Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            after_tree_removal(err(), true),
+            AfterTree::StoppedWithError(_)
+        ));
+        assert!(matches!(
+            after_tree_removal(err(), false),
+            AfterTree::Fallback
+        ));
+        assert!(matches!(
+            after_tree_removal(Ok(TreeRemove::Stopped), true),
+            AfterTree::Stopped
+        ));
+        assert!(matches!(
+            after_tree_removal(Ok(TreeRemove::Done), true),
+            AfterTree::Done
+        ));
+    }
+
+    #[test]
+    fn worker_count_never_exceeds_the_work() {
+        assert_eq!(copy_workers(16, 2), 2);
+        assert_eq!(copy_workers(4, 100), 4);
+        assert_eq!(copy_workers(0, 100), 1);
+        assert_eq!(copy_workers(8, 0), 0);
     }
 
     #[test]

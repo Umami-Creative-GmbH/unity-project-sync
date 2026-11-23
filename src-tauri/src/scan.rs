@@ -5,14 +5,12 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use walkdir::WalkDir;
-
 use crate::fsutil::{
-    is_case_insensitive, key_of, last_rel, mtime_of, parent_rel, rel_string, self_and_ancestors,
-    time_diff,
+    is_case_insensitive, key_of, last_rel, mtime_of, parent_rel, self_and_ancestors, time_diff,
 };
 use crate::model::{
     CountBytes, DeleteCounts, MAX_UI_ENTRIES, PlanAction, PlanEntry, PlanReason, PlanSummary,
@@ -559,11 +557,17 @@ fn build_tree(root: &Path, scope: &SyncScope, ctx: &WalkCtx) -> Result<Tree, Sca
         }
     }
 
+    // Top-level folders are checked here; their contents are walked in parallel below.
+    let mut walks: Vec<(PathBuf, String)> = Vec::new();
     for folder in &scope.folders {
         let key = ctx.key(folder);
         match real_names.get(&key).map(Vec::as_slice) {
             None | Some([]) => {} // missing on this side
-            Some([real]) => walk_folder(root, real, ctx, &mut tree)?,
+            Some([real]) => {
+                if let Some(base) = top_folder(root, real, ctx, &mut tree)? {
+                    walks.push((base, real.clone()));
+                }
+            }
             Some(several) => {
                 tree.warnings.push(format!(
                     "Skipped {side} folder {folder}: several folders differ only in letter case ({})",
@@ -573,11 +577,19 @@ fn build_tree(root: &Path, scope: &SyncScope, ctx: &WalkCtx) -> Result<Tree, Sca
             }
         }
     }
+    let items = walk_parallel(walks, ctx)?;
+    merge_items(items, ctx, &mut tree);
     Ok(tree)
 }
 
-/// Walks one top-level scope folder; `real` is its name as listed in `root`.
-fn walk_folder(root: &Path, real: &str, ctx: &WalkCtx, tree: &mut Tree) -> Result<(), ScanError> {
+/// Checks one top-level scope folder; `real` is its name as listed in `root`. Returns its path
+/// when it is a real directory whose contents must be walked.
+fn top_folder(
+    root: &Path,
+    real: &str,
+    ctx: &WalkCtx,
+    tree: &mut Tree,
+) -> Result<Option<PathBuf>, ScanError> {
     let side = ctx.side.label();
     if is_never_sync(real) || is_alias_prone(real) {
         return invalid(format!("\"{real}\" can never be synced."));
@@ -586,82 +598,210 @@ fn walk_folder(root: &Path, real: &str, ctx: &WalkCtx, tree: &mut Tree) -> Resul
     let top_key = ctx.key(real);
     ctx.visit()?;
     match fs::symlink_metadata(&base) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => {
             tree.warnings
                 .push(format!("Cannot read {side} folder {real}: {e}"));
             tree.errors.insert(top_key);
-            return Ok(());
+            Ok(None)
         }
         Ok(m) if m.file_type().is_symlink() => {
             tree.links.insert(top_key, real.to_string());
-            return Ok(());
+            Ok(None)
         }
         Ok(m) if m.is_file() => {
             tree.nodes.insert(top_key, file_node(real.to_string(), &m));
-            return Ok(());
+            Ok(None)
         }
         Ok(m) if m.is_dir() => {
             tree.nodes.insert(top_key, dir_node(real.to_string()));
+            Ok(Some(base))
         }
         Ok(_) => {
             tree.links.insert(top_key, real.to_string());
-            return Ok(());
+            Ok(None)
         }
     }
+}
 
-    for item in WalkDir::new(&base).min_depth(1).follow_links(false) {
-        ctx.visit()?;
-        let entry = match item {
-            Ok(e) => e,
-            Err(err) => {
-                let rel = err
-                    .path()
-                    .and_then(|p| rel_string(root, p))
-                    .unwrap_or_else(|| real.to_string());
-                tree.warnings
-                    .push(format!("Cannot read {side} entry {rel}: {err}"));
-                tree.errors.insert(ctx.key(&rel));
-                continue;
-            }
-        };
-        let Some(rel) = rel_string(root, entry.path()) else {
-            tree.warnings.push(format!(
-                "Skipped {side} entry with an unsupported name: {}",
-                entry.path().display()
-            ));
-            // Protect whatever is there in the target and don't descend.
-            if let Some(parent) = entry.path().parent().and_then(|p| rel_string(root, p)) {
-                tree.errors.insert(ctx.key(&parent));
-            }
-            continue;
-        };
-        let key = ctx.key(&rel);
-        if !tree.claim(&key, &rel, side) {
-            continue;
+/// One entry found by the parallel walk (merged into the [`Tree`] afterwards, in sorted order).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ItemKind {
+    /// The directory at `rel` (or one of its entries) could not be read: protected.
+    ReadError(String),
+    /// An entry of the directory at `rel` has a name that is not valid Unicode: protected.
+    BadName(String),
+    Dir,
+    File {
+        size: u64,
+        mtime: SystemTime,
+    },
+    /// The file's metadata could not be read: protected.
+    FileError(String),
+    /// Symbolic link / junction / special file: never followed or touched.
+    Link,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Item {
+    rel: String,
+    kind: ItemKind,
+}
+
+/// Parallel directory walk: one task per directory on the current rayon pool (the scan's pool,
+/// bounded by the thread setting). Links / junctions are never followed.
+struct Walker<'a> {
+    ctx: &'a WalkCtx<'a>,
+    items: Mutex<Vec<Item>>,
+    stopped: AtomicBool,
+}
+
+impl<'a> Walker<'a> {
+    fn walk_dir<'s>(&'s self, s: &rayon::Scope<'s>, dir: PathBuf, dir_rel: String)
+    where
+        'a: 's,
+    {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
         }
-        let ft = entry.file_type();
-        if ft.is_symlink() {
-            tree.links.insert(key, rel);
-        } else if ft.is_dir() {
-            tree.nodes.insert(key, dir_node(rel));
-        } else if ft.is_file() {
-            match entry.metadata() {
-                Ok(m) => {
-                    tree.nodes.insert(key, file_node(rel, &m));
-                }
-                Err(e) => {
-                    tree.warnings
-                        .push(format!("Cannot read {side} file {rel}: {e}"));
-                    tree.errors.insert(key);
+        let side = self.ctx.side.label();
+        let mut out = Vec::new();
+        match fs::read_dir(&dir) {
+            Err(e) => out.push(Item {
+                kind: ItemKind::ReadError(format!("Cannot read {side} entry {dir_rel}: {e}")),
+                rel: dir_rel,
+            }),
+            Ok(rd) => {
+                for entry in rd {
+                    if self.ctx.visit().is_err() {
+                        self.stopped.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(e) => {
+                            out.push(Item {
+                                kind: ItemKind::ReadError(format!(
+                                    "Cannot read {side} entry {dir_rel}: {e}"
+                                )),
+                                rel: dir_rel.clone(),
+                            });
+                            continue;
+                        }
+                    };
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else {
+                        // Protect whatever is there in the target and don't descend.
+                        out.push(Item {
+                            kind: ItemKind::BadName(format!(
+                                "Skipped {side} entry with an unsupported name: {}",
+                                entry.path().display()
+                            )),
+                            rel: dir_rel.clone(),
+                        });
+                        continue;
+                    };
+                    let rel = format!("{dir_rel}/{name}");
+                    let ft = match entry.file_type() {
+                        Ok(ft) => ft,
+                        Err(e) => {
+                            out.push(Item {
+                                kind: ItemKind::ReadError(format!(
+                                    "Cannot read {side} entry {rel}: {e}"
+                                )),
+                                rel,
+                            });
+                            continue;
+                        }
+                    };
+                    let kind = if ft.is_symlink() {
+                        ItemKind::Link
+                    } else if ft.is_dir() {
+                        let path = entry.path();
+                        let child_rel = rel.clone();
+                        s.spawn(move |s| self.walk_dir(s, path, child_rel));
+                        ItemKind::Dir
+                    } else if ft.is_file() {
+                        // Never follows a link (DirEntry metadata is the entry's own).
+                        match entry.metadata() {
+                            Ok(m) => ItemKind::File {
+                                size: m.len(),
+                                mtime: mtime_of(&m),
+                            },
+                            Err(e) => {
+                                ItemKind::FileError(format!("Cannot read {side} file {rel}: {e}"))
+                            }
+                        }
+                    } else {
+                        // Sockets, devices, ... : never touched.
+                        ItemKind::Link
+                    };
+                    out.push(Item { rel, kind });
                 }
             }
-        } else {
-            // Sockets, devices, ... : never touched.
-            tree.links.insert(key, rel);
+        }
+        self.items
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(out);
+    }
+}
+
+/// Walks the contents of the given top-level folders (`(path, rel)`) in parallel on the current
+/// rayon pool and returns everything found, sorted by path (deterministic for any thread count).
+fn walk_parallel(dirs: Vec<(PathBuf, String)>, ctx: &WalkCtx) -> Result<Vec<Item>, ScanError> {
+    let walker = Walker {
+        ctx,
+        items: Mutex::new(Vec::new()),
+        stopped: AtomicBool::new(false),
+    };
+    rayon::scope(|s| {
+        let w = &walker;
+        for (path, rel) in dirs {
+            s.spawn(move |s| w.walk_dir(s, path, rel));
+        }
+    });
+    if walker.stopped.into_inner() {
+        return Err(ScanError::Cancelled);
+    }
+    let mut items = walker.items.into_inner().unwrap_or_else(|e| e.into_inner());
+    items.sort_unstable();
+    Ok(items)
+}
+
+/// Adds the walked entries to `tree` (in sorted order, so collisions and warnings never depend
+/// on thread timing).
+fn merge_items(items: Vec<Item>, ctx: &WalkCtx, tree: &mut Tree) {
+    let side = ctx.side.label();
+    for Item { rel, kind } in items {
+        let key = ctx.key(&rel);
+        match kind {
+            ItemKind::ReadError(msg) | ItemKind::BadName(msg) => {
+                tree.warnings.push(msg);
+                tree.errors.insert(key);
+            }
+            _ if !tree.claim(&key, &rel, side) => {}
+            ItemKind::Dir => {
+                tree.nodes.insert(key, dir_node(rel));
+            }
+            ItemKind::File { size, mtime } => {
+                let node = Node {
+                    rel,
+                    kind: Kind::File,
+                    size,
+                    mtime,
+                };
+                tree.nodes.insert(key, node);
+            }
+            ItemKind::FileError(msg) => {
+                tree.warnings.push(msg);
+                tree.errors.insert(key);
+            }
+            ItemKind::Link => {
+                tree.links.insert(key, rel);
+            }
         }
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -957,16 +1097,22 @@ fn diff(src: &Tree, tgt: &Tree, ctx: &WalkCtx) -> Result<Diff, ScanError> {
 // ---------------------------------------------------------------------------------------------
 
 /// Scans `source` and `target` within `scope` and builds the full plan.
+/// `threads` (clamped to 1..=32) bounds the parallel directory walk: both sides share one pool
+/// of that many threads; 1 walks everything sequentially on a single thread.
 /// `progress` is called at most ~10 times per second.
 pub fn scan(
     source: &str,
     target: &str,
     scope: &SyncScope,
+    threads: usize,
     cancel: &AtomicBool,
     progress: &(dyn Fn(ScanProgress) + Sync),
 ) -> Result<ScanOutput, ScanError> {
     let started = Instant::now();
     let v = validate(source, target, scope)?;
+    let threads = crate::threads::clamp(threads);
+    let pool = crate::threads::pool(threads, "scan")
+        .map_err(|e| ScanError::Invalid(format!("Cannot start the scan worker threads: {e}")))?;
     // Case-insensitive keys when either side matches names case-insensitively (Windows, the
     // default macOS volumes, ...): a differently cased name is the same entry there.
     let fold = is_case_insensitive(&v.source, false)
@@ -1028,14 +1174,19 @@ pub fn scan(
         }
         r
     };
-    let (src_r, tgt_r) = rayon::join(
-        || {
-            let r = build_tree(&v.source, &v.scope, &src_ctx);
-            src_done.store(true, Ordering::Relaxed);
-            stop_other_on_error(r)
-        },
-        || stop_other_on_error(build_tree(&v.target, &v.scope, &tgt_ctx)),
-    );
+    // Both walks share the pool (work stealing balances them); with 1 thread they run one after
+    // the other.
+    let (src_r, tgt_r) = pool.install(|| {
+        rayon::join(
+            || {
+                let r = build_tree(&v.source, &v.scope, &src_ctx);
+                src_done.store(true, Ordering::Relaxed);
+                stop_other_on_error(r)
+            },
+            || stop_other_on_error(build_tree(&v.target, &v.scope, &tgt_ctx)),
+        )
+    });
+    drop(pool);
     // Report the real error first: the other side's `Cancelled` may only come from `abort`.
     let (src_tree, tgt_tree) = match (src_r, tgt_r) {
         (Ok(s), Ok(t)) => (s, t),
@@ -1104,6 +1255,7 @@ pub fn scan(
         total_entries: total_entries as u64,
         warnings,
         scan_ms: started.elapsed().as_millis() as u64,
+        scan_threads: threads as u32,
     };
     let plan = Plan {
         source: v.source,

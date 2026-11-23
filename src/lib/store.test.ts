@@ -11,10 +11,17 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import {
+  SettingsReadOnlyError,
   SettingsUnreadableError,
+  createWriteGate,
+  loadAppSettings,
+  loadAppSettingsFrom,
   loadProjects,
   loadProjectsFrom,
   persistStep,
+  saveAppSettings,
+  saveAppSettingsTo,
+  saveProjects,
   saveProjectsTo,
   sanitizeProject,
   type KeyValueStore,
@@ -176,14 +183,91 @@ describe("loadProjectsFrom — stored list", () => {
 });
 
 describe("loadProjects", () => {
+  /** The plugin store the module opened (it is opened once and cached for the session). */
+  let opened: FakeStore | null = null;
+
   it("backs up an unusable list and starts empty, writing nothing", async () => {
     const store = new FakeStore({ projects: "garbage" });
+    opened = store;
     mocks.load.mockResolvedValue(store);
     const result = await loadProjects(DEFAULT);
     expect(mocks.prepareSettings).toHaveBeenCalledBefore(mocks.load);
     expect(mocks.backupSettings).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ projects: [], backupPath: "C:\\AppData\\settings.json.bak-1" });
     expect(store.writes).toBe(0);
+    // The backup makes writing safe again: the app settings can be saved.
+    await saveAppSettings({ multiThreaded: true, threads: 4, theme: "dark" });
+    expect(store.data.get("appSettings")).toEqual({ multiThreaded: true, threads: 4, theme: "dark" });
+  });
+
+  it("leaves the file untouched for the session when the projects can't be loaded", async () => {
+    // The plugin store is opened once per session: the one from the test above (still "garbage").
+    const store = opened!;
+    expect(store.data.get("projects")).toBe("garbage");
+    const writesBefore = store.writes;
+    mocks.backupSettings.mockRejectedValueOnce(new Error("disk full"));
+    await expect(loadProjects(DEFAULT)).rejects.toThrow("disk full");
+    // Neither saver writes, and the app settings don't even load (so nothing tries to save them).
+    await expect(saveAppSettings({ multiThreaded: false, threads: 8, theme: "dark" })).rejects.toBeInstanceOf(
+      SettingsReadOnlyError,
+    );
+    await expect(saveProjects([])).rejects.toBeInstanceOf(SettingsReadOnlyError);
+    await expect(loadAppSettings()).rejects.toBeInstanceOf(SettingsReadOnlyError);
+    expect(store.writes).toBe(writesBefore);
+  });
+});
+
+describe("createWriteGate", () => {
+  it("holds writes until the projects load settles, then allows or refuses them", async () => {
+    const gate = createWriteGate();
+    let passed = false;
+    const waiting = gate.assertWritable().then(() => (passed = true));
+    await Promise.resolve();
+    expect(passed).toBe(false);
+    gate.settle(true);
+    await waiting;
+    expect(passed).toBe(true);
+
+    const refused = createWriteGate();
+    const early = refused.assertWritable();
+    refused.settle(false);
+    await expect(early).rejects.toBeInstanceOf(SettingsReadOnlyError);
+    await expect(refused.assertWritable()).rejects.toBeInstanceOf(SettingsReadOnlyError);
+  });
+
+  it("follows the latest projects load", async () => {
+    const gate = createWriteGate();
+    gate.settle(false);
+    gate.settle(true);
+    await expect(gate.assertWritable()).resolves.toBeUndefined();
+  });
+});
+
+describe("app settings", () => {
+  it("defaults when missing, without writing", async () => {
+    const store = new FakeStore();
+    expect(await loadAppSettingsFrom(store)).toEqual({ multiThreaded: true, threads: "auto", theme: "system" });
+    expect(store.writes).toBe(0);
+  });
+
+  it("sanitizes a stored value, without writing it back", async () => {
+    const store = new FakeStore({ appSettings: { multiThreaded: false, threads: 99, theme: "sepia" } });
+    expect(await loadAppSettingsFrom(store)).toEqual({ multiThreaded: false, threads: 32, theme: "system" });
+    expect(store.writes).toBe(0);
+    expect(await loadAppSettingsFrom(new FakeStore({ appSettings: "garbage" }))).toEqual({
+      multiThreaded: true,
+      threads: "auto",
+      theme: "system",
+    });
+  });
+
+  it("round-trips through save under its own key, leaving the projects alone", async () => {
+    const projects = [{ id: "a" }];
+    const store = new FakeStore({ projects });
+    await saveAppSettingsTo(store, { multiThreaded: true, threads: 6, theme: "dark" });
+    expect(store.data.get("appSettings")).toEqual({ multiThreaded: true, threads: 6, theme: "dark" });
+    expect(store.data.get("projects")).toEqual(projects);
+    expect(await loadAppSettingsFrom(store)).toEqual({ multiThreaded: true, threads: 6, theme: "dark" });
   });
 });
 

@@ -128,6 +128,8 @@ pub struct PlanSummary {
     pub total_entries: u64,
     pub warnings: Vec<String>,
     pub scan_ms: u64,
+    /// Worker threads the scan used for its directory walk.
+    pub scan_threads: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +175,10 @@ pub struct SyncProgress {
     pub delete_done: u64,
     /// Items (files + folders) the plan deletes.
     pub delete_total: u64,
+    /// Worker threads actually used in this run: the most worker threads any phase of it starts
+    /// (the delete pool only when something is deleted; the copy phase never more than there
+    /// are files; at least 1). At most the resolved thread setting.
+    pub threads: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +203,19 @@ pub struct SyncReport {
     /// At most `MAX_REPORTED_ERRORS` errors; `error_count` has the real number.
     pub errors: Vec<SyncError>,
     pub error_count: u64,
+    /// Worker threads of this run (see [`SyncProgress::threads`]).
+    pub threads: u32,
+}
+
+/// Answer of the `thread_info` command (labels of the "Threads" setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadInfo {
+    pub logical_cpus: u32,
+    /// What "Auto" resolves to on this machine: `logical_cpus` clamped to 1..=16.
+    pub auto_threads: u32,
+    /// Largest accepted thread count (32).
+    pub max_threads: u32,
 }
 
 #[cfg(test)]
@@ -244,6 +263,7 @@ mod tests {
             errors: 0,
             delete_done: 0,
             delete_total: 0,
+            threads: 4,
         };
         let v = serde_json::to_value(prog).unwrap();
         assert_eq!(v["phase"], "copying");

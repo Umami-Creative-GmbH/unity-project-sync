@@ -20,6 +20,12 @@ import type { ProjectInfo, SyncProject } from "@/lib/types";
 interface BatchRunnerOptions {
   /** The current project list (read when a batch starts). */
   getProjects: () => SyncProject[];
+  /**
+   * The `threads` request for the backend (null = auto), see effectiveThreads(). Read once when a
+   * batch starts scanning (a "sync now" batch keeps it for its syncs too) and once when the preview's
+   * "Start sync" is pressed: a running batch never changes its thread count.
+   */
+  getThreads: () => number | null;
   /** The run phase ended (the report is showing). */
   onFinished: (state: BatchState) => void;
   /**
@@ -153,7 +159,7 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
   }, []);
 
   const runSyncs = useCallback(
-    async (token: number, projectIds: string[]) => {
+    async (token: number, projectIds: string[], threads: number | null) => {
       const runIds = new Set(projectIds);
       // Plans that won't run (excluded, nothing to do) are released right away.
       discard(
@@ -170,7 +176,7 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
         const opId = opIdRef.current;
         dispatch({ type: "syncStarted", id: item.projectId, opId });
         try {
-          const report = await api.runSync(item.plan!.planId, opId);
+          const report = await api.runSync(item.plan!.planId, opId, threads);
           if (token !== tokenRef.current) return;
           dispatch({ type: "syncFinished", id: item.projectId, report });
           if (report.cancelled) break;
@@ -194,6 +200,7 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
       discardHeldPlans(stateRef.current.items);
       cancelRef.current = false;
       const token = ++tokenRef.current;
+      const threads = optionsRef.current.getThreads();
       dispatch({ type: "begin", autoSync, chosenIds: projectIds, now: Date.now() });
 
       void (async () => {
@@ -220,7 +227,7 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
             const opId = opIdRef.current;
             dispatch({ type: "scanStarted", id: item.projectId, opId, now: Date.now() });
             try {
-              const plan = await api.scan(item.source, item.target, item.scope, opId);
+              const plan = await api.scan(item.source, item.target, item.scope, opId, threads);
               if (token !== tokenRef.current) {
                 discard([plan.planId]);
                 return;
@@ -262,7 +269,8 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
             return;
           }
           const withWork = stateRef.current.items.filter(canInclude).map((it) => it.projectId);
-          await runSyncs(token, withWork);
+          // "Sync now" is one run: the sync keeps the threads the scan started with.
+          await runSyncs(token, withWork, threads);
         } catch (e) {
           if (token !== tokenRef.current) return;
           const message = errorMessage(e);
@@ -286,7 +294,8 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
     cancelRef.current = false;
     const token = tokenRef.current;
     const ids = includedItems(s).map((it) => it.projectId);
-    void runSyncs(token, ids).catch((e) => {
+    // Settings changed while the preview was open apply to this sync.
+    void runSyncs(token, ids, optionsRef.current.getThreads()).catch((e) => {
       if (token !== tokenRef.current) return;
       const message = errorMessage(e);
       discardHeldPlans(stateRef.current.items);

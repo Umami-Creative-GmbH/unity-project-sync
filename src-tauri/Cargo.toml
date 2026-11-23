@@ -1,8 +1,8 @@
 [package]
 name = "unity-project-sync"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Mirror the non-regenerable parts of Unity projects"
+authors = ["Umami Creative GmbH"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

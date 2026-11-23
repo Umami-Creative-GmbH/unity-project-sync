@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   IconAlertTriangle,
   IconCopy,
+  IconCpu,
   IconFile,
   IconLoader2,
   IconSparkles,
@@ -14,6 +15,7 @@ import { SpeedChart } from "@/components/speed-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes, formatCount, formatDuration, formatEta, formatSpeed, plural } from "@/lib/format";
 import { averageSpeed, hasCurrentReading, runElapsedMs, type SpeedHistory } from "@/lib/speed-history";
 import type { SyncPhase, SyncProgress } from "@/lib/types";
@@ -166,11 +168,29 @@ export function TransferCard(props: TransferCardProps) {
       <div className="flex h-9 min-w-0 items-center gap-2 border-t bg-muted/40 px-4 text-xs text-muted-foreground">
         <IconFile className="size-3.5 shrink-0" />
         {progress?.currentFile ? (
-          <span className="min-w-0 truncate font-mono" title={progress.currentFile}>
+          <span className="min-w-0 flex-1 truncate font-mono" title={progress.currentFile}>
             {progress.currentFile}
           </span>
         ) : (
-          <span>—</span>
+          <span className="min-w-0 flex-1">—</span>
+        )}
+        {progress && progress.threads > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className="ml-auto inline-flex h-5 shrink-0 cursor-default items-center gap-1 rounded-full bg-background/70 px-1.5 font-medium tabular-nums ring-1 ring-foreground/10"
+                tabIndex={0}
+              >
+                <IconCpu className="size-3" />
+                {plural(progress.threads, "thread")}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {progress.threads === 1
+                ? "Single-threaded: one file at a time"
+                : `${progress.threads} worker threads copy, verify and delete in parallel`}
+            </TooltipContent>
+          </Tooltip>
         )}
       </div>
     </Card>

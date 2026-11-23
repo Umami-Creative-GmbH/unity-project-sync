@@ -6,6 +6,7 @@ import {
   IconChevronRight,
   IconCircleCheck,
   IconCircleX,
+  IconCpu,
   IconPlayerPlay,
   IconRefresh,
   IconTrash,
@@ -33,7 +34,7 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { activeWarnings, canInclude, hasWork, includedItems, sumPlans, type BatchItem, type BatchState } from "@/lib/batch";
-import { formatBytes, formatCount, plural } from "@/lib/format";
+import { formatBytes, formatCount, formatDuration, plural } from "@/lib/format";
 import type { PlanAction, PlanSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -72,6 +73,7 @@ export function BatchPreview({
   const deleting = included.filter((it) => it.plan!.delete.files + it.plan!.delete.dirs > 0);
   const deleteCount = totals.delete.files + totals.delete.dirs;
   const transferFiles = totals.copy.files + totals.update.files + totals.verify.files;
+  const scanStats = scanSummary(scanned.map((it) => it.plan!));
 
   const toggleExpanded = (id: string) =>
     setExpanded((prev) => {
@@ -121,6 +123,12 @@ export function BatchPreview({
             "There is nothing to copy or delete."
           )}
         </p>
+        {scanStats && (
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
+            <IconCpu className="size-3.5 shrink-0" />
+            Scanned in {formatDuration(scanStats.ms)} with {scanStats.threads}
+          </p>
+        )}
       </div>
 
       <PlanStatTiles counts={tileCounts} />
@@ -335,6 +343,18 @@ function PreviewRow({
       )}
     </li>
   );
+}
+
+/** "Scanned in 1.2s with 8 threads" (sum of the scan times; a range when the projects differ). */
+function scanSummary(plans: PlanSummary[]): { ms: number; threads: string } | null {
+  const threads = [...new Set(plans.map((p) => p.scanThreads).filter((n) => typeof n === "number" && n > 0))];
+  if (plans.length === 0 || threads.length === 0) return null;
+  const min = Math.min(...threads);
+  const max = Math.max(...threads);
+  return {
+    ms: plans.reduce((sum, p) => sum + (p.scanMs || 0), 0),
+    threads: min === max ? plural(min, "thread") : `${min}–${max} threads`,
+  };
 }
 
 const CHIP_ACTIONS: PlanAction[] = ["copy", "update", "verify", "delete"];

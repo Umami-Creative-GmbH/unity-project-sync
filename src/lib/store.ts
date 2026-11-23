@@ -1,4 +1,5 @@
-// Persisted settings via @tauri-apps/plugin-store: the list of projects under "projects".
+// Persisted settings via @tauri-apps/plugin-store: the list of projects under "projects" and the
+// app preferences under "appSettings" (see ./settings.ts).
 // "Shutdown after" and the list selection are intentionally NOT persisted.
 //
 // Migration: the single-project version stored "source", "target" and "scope". When those exist and
@@ -12,7 +13,8 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 import { api } from "@/lib/api";
 import { createProject, defaultProjectName } from "@/lib/projects";
 import { isScopeLike, sanitizeScope, scopesEqual } from "@/lib/scope";
-import type { ProjectLastRun, RunOutcome, SyncProject, SyncScope } from "@/lib/types";
+import { APP_SETTINGS_KEY, sanitizeAppSettings } from "@/lib/settings";
+import type { AppSettings, ProjectLastRun, RunOutcome, SyncProject, SyncScope } from "@/lib/types";
 
 export const PROJECTS_KEY = "projects";
 export const LEGACY_KEYS = ["source", "target", "scope"] as const;
@@ -179,20 +181,94 @@ export interface LoadedProjects {
   backupPath: string | null;
 }
 
+/** Writing to the settings file is not allowed this session (its projects couldn't be loaded). */
+export class SettingsReadOnlyError extends Error {
+  constructor() {
+    super("The settings file is read-only for this session.");
+    this.name = "SettingsReadOnlyError";
+  }
+}
+
+/**
+ * Session-wide write gate shared by the projects and the app settings (one file, one autosaving
+ * store). Writes wait until the projects have been loaded; when that failed the file is left
+ * untouched for the session, as the app tells the user.
+ */
+export interface WriteGate {
+  /** Records the outcome of a projects load (the latest one counts). */
+  settle(ok: boolean): void;
+  /** Resolves once the projects load has settled; throws SettingsReadOnlyError when it failed. */
+  assertWritable(): Promise<void>;
+}
+
+export function createWriteGate(): WriteGate {
+  let writable: boolean | null = null;
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((r) => (resolveSettled = r));
+  return {
+    settle(ok) {
+      writable = ok;
+      resolveSettled();
+    },
+    async assertWritable() {
+      await settled;
+      if (!writable) throw new SettingsReadOnlyError();
+    },
+  };
+}
+
+const writeGate = createWriteGate();
+
 /**
  * Loads the saved projects. Throws when the settings can't be read and couldn't be backed up —
- * the caller must then not save during this session.
+ * the caller must then not save during this session (the shared write gate enforces this for the
+ * app settings, too).
  */
 export async function loadProjects(defaultScope: SyncScope): Promise<LoadedProjects> {
-  const { store, quarantined } = await getStore();
   try {
-    return { projects: await loadProjectsFrom(store, defaultScope), backupPath: quarantined };
+    const { store, quarantined } = await getStore();
+    let loaded: LoadedProjects;
+    try {
+      loaded = { projects: await loadProjectsFrom(store, defaultScope), backupPath: quarantined };
+    } catch (e) {
+      if (!(e instanceof SettingsUnreadableError)) throw e;
+      // Throws when the backup fails: the file then stays untouched.
+      loaded = { projects: [], backupPath: await api.backupSettings() };
+    }
+    writeGate.settle(true);
+    return loaded;
   } catch (e) {
-    if (!(e instanceof SettingsUnreadableError)) throw e;
-    return { projects: [], backupPath: await api.backupSettings() };
+    writeGate.settle(false);
+    throw e;
   }
 }
 
 export async function saveProjects(projects: SyncProject[]): Promise<void> {
+  await writeGate.assertWritable();
   await saveProjectsTo((await getStore()).store, projects);
+}
+
+// ---- app settings ("appSettings") ------------------------------------------------------------
+
+/** Reads the app settings; missing or invalid values become the defaults. Never writes. */
+export async function loadAppSettingsFrom(store: KeyValueStore): Promise<AppSettings> {
+  return sanitizeAppSettings(await store.get<unknown>(APP_SETTINGS_KEY));
+}
+
+export async function saveAppSettingsTo(store: KeyValueStore, settings: AppSettings): Promise<void> {
+  await store.set(APP_SETTINGS_KEY, sanitizeAppSettings(settings));
+}
+
+/**
+ * Waits for the projects load (same file): when the file is read-only for this session this throws
+ * SettingsReadOnlyError, so the settings store never tries to save over it.
+ */
+export async function loadAppSettings(): Promise<AppSettings> {
+  await writeGate.assertWritable();
+  return loadAppSettingsFrom((await getStore()).store);
+}
+
+export async function saveAppSettings(settings: AppSettings): Promise<void> {
+  await writeGate.assertWritable();
+  await saveAppSettingsTo((await getStore()).store, settings);
 }

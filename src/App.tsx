@@ -12,11 +12,13 @@ import { BatchSyncProgress } from "@/components/batch-sync-progress";
 import { InlineNotice } from "@/components/folder-card";
 import { ProjectEditor } from "@/components/project-editor";
 import { ProjectList } from "@/components/project-list";
+import { SettingsDialog } from "@/components/settings-dialog";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { ShutdownSwitch } from "@/components/shutdown-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { appSettings, getAppSettings } from "@/hooks/use-app-settings";
 import { useBatchRunner } from "@/hooks/use-batch-runner";
 import { useFolderInfos } from "@/hooks/use-folder-infos";
 import { api, errorMessage } from "@/lib/api";
@@ -39,6 +41,7 @@ import {
   type ProjectIssue,
 } from "@/lib/projects";
 import { cloneDefaultScope, sanitizeScope } from "@/lib/scope";
+import { effectiveThreads } from "@/lib/settings";
 import { loadProjects, persistStep, saveProjects, type PersistMode } from "@/lib/store";
 import type { SyncProject, SyncScope } from "@/lib/types";
 
@@ -66,6 +69,7 @@ function App() {
   const shutdownAfterRef = useRef(false);
   shutdownAfterRef.current = shutdownAfter;
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
@@ -88,6 +92,9 @@ function App() {
       try {
         ({ projects: list, backupPath } = await loadProjects(def));
         ok = true;
+        // The settings file is reachable now: re-read app settings whose first load failed, so
+        // the first scan uses the stored thread choice.
+        if (appSettings.status() === "failed") void appSettings.load();
       } catch (e) {
         console.warn("Could not load projects:", e);
         toast.error("Couldn't load the saved projects", {
@@ -215,6 +222,7 @@ function App() {
 
   const runner = useBatchRunner({
     getProjects: () => projectsRef.current,
+    getThreads: () => effectiveThreads(getAppSettings()),
     onFinished: handleFinished,
     onScanFailed: handleScanFailed,
     onScanCancelled: handleScanCancelled,
@@ -440,7 +448,7 @@ function App() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <AppHeader right={headerRight} />
+      <AppHeader right={headerRight} onOpenSettings={() => setSettingsOpen(true)} />
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {phaseAnnouncement}
       </div>
@@ -629,6 +637,8 @@ function App() {
       )}
 
       <ShutdownDialog open={shutdownOpen} onCancel={cancelShutdown} onShutdown={() => void shutdownNow()} />
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} busy={busy} />
     </div>
   );
 }
