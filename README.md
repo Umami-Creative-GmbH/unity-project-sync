@@ -22,7 +22,10 @@
 
 ---
 
-Copying Unity projects between drives, backup folders, or machines is slow and noisy when gigabytes of regenerable `Library/`, `Temp/`, or `.git/` data get dragged along. **Unity Project Sync** is a lightweight desktop app for Windows (built with Tauri 2, Rust, and React) that mirrors only the parts of your Unity projects that actually matter — safely, in parallel, and with a full preview before anything is written or deleted.
+Copying Unity projects between drives, backup folders, or machines is slow and noisy when gigabytes of regenerable `Library/`, `Temp/`, or `.git/` data get dragged along. **Unity Project Sync** is a lightweight desktop app for Windows (built with Tauri 2, Rust, and React) that mirrors only the parts of your Unity projects that actually matter — to another drive, a backup folder or a server share — safely, in parallel, and with a full preview before anything is written or deleted.
+
+> [!NOTE]
+> **Not a replacement for version control.** Unity Project Sync keeps no history, can't branch or merge, and doesn't keep older versions: the target simply mirrors the source as it is right now. Keep using Git, Unity Version Control (Plastic SCM) or Perforce for that. This is a helper for one job: getting Unity projects onto another drive or a server share fast and efficiently, without the gigabytes Unity regenerates anyway.
 
 <!-- Screenshots: made with `pnpm demo` (see "Screenshots & demo mode"); they follow GitHub's light/dark theme. -->
 <table>

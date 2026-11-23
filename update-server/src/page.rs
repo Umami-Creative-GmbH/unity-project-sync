@@ -64,6 +64,10 @@ const I_CHEVRON_DOWN: &str = r#"<path d="M6 9l6 6l6 -6"/>"#;
 const I_FINGERPRINT: &str = r#"<path d="M18.9 7a8 8 0 0 1 1.1 5v1a6 6 0 0 0 .8 3"/><path d="M8 11a4 4 0 0 1 8 0v1a10 10 0 0 0 2 6"/><path d="M12 11v2a14 14 0 0 0 2.5 8"/><path d="M8 15a18 18 0 0 0 1.8 6"/><path d="M4.9 19a22 22 0 0 1 -.9 -7v-1a8 8 0 0 1 12 -6.95"/>"#;
 const I_ARROW_LEFT: &str = r#"<path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/>"#;
 const I_GITHUB: &str = r#"<path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/>"#;
+const I_SUN: &str = r#"<path d="M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"/>"#;
+const I_MOON: &str =
+    r#"<path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/>"#;
+const I_INFO: &str = r#"<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"/><path d="M12 9h.01"/><path d="M11 12h1v4h1"/>"#;
 const I_GIT_FORK: &str = r#"<path d="M10 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M5 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M15 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 8v2a2 2 0 0 0 2 2h6a2 2 0 0 0 2 -2v-2"/><path d="M12 12l0 4"/>"#;
 
 const FEATURES: [(&str, &str, &str); 6] = [
@@ -151,7 +155,7 @@ fn shot(name: &str, alt: &str, lazy: bool) -> String {
     let light = esc(&assets::url(&format!("shot-{name}-light.png")));
     let dark = esc(&assets::url(&format!("shot-{name}-dark.png")));
     format!(
-        r#"<a class="shot-link" href="{light}" data-lightbox><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)"><img src="{light}" width="980" height="760" alt="{alt}"{loading} decoding="async"></picture></a>"#,
+        r#"<a class="shot-link" href="{light}" data-lightbox><picture><source srcset="{dark}" media="(prefers-color-scheme: dark)" data-scheme="dark"><img src="{light}" width="980" height="760" alt="{alt}"{loading} decoding="async"></picture></a>"#,
         alt = esc(alt),
         loading = if lazy { r#" loading="lazy""# } else { "" },
     )
@@ -309,8 +313,9 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
 <title>{title}</title>
 <meta name="description" content="{desc}">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0a">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" data-scheme="light">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0a" data-scheme="dark">
+<script src="{theme_js}"></script>
 <link rel="icon" href="{icon}" type="image/svg+xml">
 <link rel="canonical" href="{base}/">
 <meta property="og:type" content="website">
@@ -335,6 +340,7 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
         app = APP_NAME,
         css = esc(&assets::url("site.css")),
         js = esc(&assets::url("site.js")),
+        theme_js = esc(&assets::url("theme.js")),
     );
     s.push_str("<div class=\"header-actions\">\n");
     if let Some(gh) = &ctx.github {
@@ -347,6 +353,13 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
             icon(I_DOWNLOAD)
         );
     }
+    // Shown by site.js (it does nothing without JavaScript); theme.js sets the label.
+    let _ = writeln!(
+        s,
+        r#"<button type="button" class="btn btn-outline btn-icon theme-toggle" data-theme-toggle aria-label="Switch theme" title="Switch theme" hidden><span class="icon-moon">{}</span><span class="icon-sun">{}</span></button>"#,
+        icon(I_MOON),
+        icon(I_SUN)
+    );
     s.push_str("</div>\n</div>\n</header>\n<main id=\"main\" tabindex=\"-1\">\n");
     s.push_str(main);
     let _ = write!(
@@ -416,11 +429,13 @@ fn hero(latest: Option<&Release>) -> String {
 <img class="hero-icon" src="{icon}" alt="" width="104" height="104">
 <h1 id="hero-title">{app}</h1>
 <p class="tagline">{tagline}</p>
-<p class="lede">A small Windows app that copies <code>Assets</code>, <code>Packages</code>, <code>ProjectSettings</code> and the project’s root files from a source to a target folder, removes what’s gone and leaves everything Unity can rebuild alone.</p>
+<p class="lede">A small Windows app that copies <code>Assets</code>, <code>Packages</code>, <code>ProjectSettings</code> and the project’s root files to another drive, a backup folder or a server share, removes what’s gone and leaves everything Unity can rebuild alone.</p>
+<p class="scope-note">{info}<span><strong>Not a replacement for version control.</strong> It keeps no history and no older versions; the target simply mirrors the source as it is now. Keep Git, Unity Version Control or Perforce for that. This is a helper for getting projects copied fast and efficiently.</span></p>
 "#,
         icon = esc(&assets::url("app-icon.svg")),
         app = APP_NAME,
         tagline = TAGLINE,
+        info = icon(I_INFO),
     );
     match latest {
         Some(r) => {

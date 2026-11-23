@@ -44,6 +44,11 @@ pub const ASSETS: &[Asset] = &[
         bytes: include_bytes!("../static/site.js"),
     },
     Asset {
+        name: "theme.js",
+        content_type: "text/javascript; charset=utf-8",
+        bytes: include_bytes!("../static/theme.js"),
+    },
+    Asset {
         name: "app-icon.svg",
         content_type: "image/svg+xml",
         bytes: include_bytes!("../static/app-icon.svg"),

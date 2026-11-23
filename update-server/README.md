@@ -10,6 +10,8 @@ Releases are plain folders that you build on your PC and upload into the contain
 
 The page is self-contained. The Geist font (SIL OFL 1.1, licence text at `/assets/Geist-OFL.txt`), the icon, CSS and JS are compiled into the binary, so nothing is loaded from third-party hosts. There are no cookies, no analytics and no IP logging.
 
+The page follows the visitor's light/dark system setting. A toggle in the header overrides it; the choice is kept in the browser's `localStorage` (`ups-theme`) and never sent to the server. Picking the theme the system uses anyway removes it again, so the page goes back to following the system. `static/theme.js` applies it before the first paint (the CSP allows no inline scripts).
+
 The page shows app screenshots (a large one under the download button, a gallery below the features) that follow the visitor's light/dark preference and open full size in a small lightbox. They live in `static/screenshots/` and are made with the app's demo mode (see "Screenshots & demo mode" in the [root README](../README.md#screenshots--demo-mode)).
 
 The header has GitHub-style **Star** and **Fork** buttons for the repository, with counts. The server itself fetches the counts from the GitHub API (`api.github.com/repos/<owner>/<name>`, unauthenticated, every 30 minutes, every 5 minutes after a failure) and keeps them in memory. Visitors' browsers never contact GitHub. Until the first fetch succeeds, the buttons are shown without counts. On narrow screens only Star is shown; the footer always links the source code.

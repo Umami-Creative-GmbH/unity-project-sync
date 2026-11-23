@@ -63,8 +63,46 @@
     monospace;
 }
 
+/* Theme: the system decides unless the header toggle forced one (theme.js sets
+   <html data-theme="light|dark">). The dark tokens below exist twice, for the system preference
+   and for a forced dark theme: keep both blocks identical. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-hover: oklch(0.85 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --border-strong: oklch(1 0 0 / 18%);
+  --outline-bg: oklch(1 0 0 / 4%);
+  --focus: oklch(0.87 0 0);
+  --tagline: oklch(0.87 0 0);
+
+  --success: oklch(0.845 0.143 164.978);
+  --success-bg: oklch(0.262 0.051 172.552 / 0.55);
+  --success-border: oklch(0.432 0.095 166.913 / 0.7);
+  --glow: oklch(0.696 0.17 162.48 / 0.14);
+  --grid-line: oklch(1 0 0 / 0.045);
+
+  --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
+  --shadow-md: 0 6px 16px -4px oklch(0 0 0 / 0.5);
+  --shadow-shot: 0 28px 64px -16px oklch(0 0 0 / 0.7), 0 10px 24px -10px oklch(0 0 0 / 0.5);
+  --icon-shadow: drop-shadow(0 14px 32px oklch(0 0 0 / 0.6));
+  --backdrop: oklch(0 0 0 / 0.8);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
@@ -330,6 +368,41 @@ main:focus {
   text-decoration: none;
 }
 
+.theme-toggle {
+  color: var(--muted-foreground);
+}
+
+.theme-toggle:hover {
+  color: var(--foreground);
+}
+
+.theme-toggle .icon-moon {
+  display: inline-flex;
+}
+
+/* The icon shows the theme you switch to: a moon while light, a sun while dark. */
+.theme-toggle .icon-sun {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-sun {
+  display: inline-flex;
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-moon {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .icon-sun {
+    display: inline-flex;
+  }
+
+  :root:not([data-theme="light"]) .theme-toggle .icon-moon {
+    display: none;
+  }
+}
+
 .brand img {
   width: 28px;
   height: 28px;
@@ -497,6 +570,37 @@ h1 {
   padding: 0.1em 0.35em;
   border-radius: 0.375rem;
   background: var(--muted);
+}
+
+/* "Not a replacement for version control": set apart from the lede, but quieter than the CTA. */
+.scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  max-width: 38rem;
+  margin: 1.25rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  text-align: left;
+  text-wrap: pretty;
+}
+
+.scope-note svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.0625rem;
+  flex-shrink: 0;
+  color: var(--foreground);
+}
+
+.scope-note strong {
+  color: var(--foreground);
+  font-weight: 600;
 }
 
 .cta {

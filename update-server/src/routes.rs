@@ -801,6 +801,7 @@ mod tests {
         assert!(hdr(&g, "content-security-policy").contains("default-src 'none'"));
         assert!(g.body.contains("Unity Project Sync"));
         assert!(g.body.contains("No release yet"));
+        assert!(g.body.contains("Not a replacement for version control."));
         assert!(!g.body.contains("href=\"/download\""));
         assert!(!g.body.contains("Previous versions"));
         assert!(g.body.contains("https://umami-creative.de/impressum"));
@@ -818,7 +819,21 @@ mod tests {
         for name in shots {
             assert!(assets::find(&format!("shot-{name}")).is_some(), "{name}");
         }
-        assert!(g.body.contains("media=\"(prefers-color-scheme: dark)\""));
+        assert!(
+            g.body
+                .contains("media=\"(prefers-color-scheme: dark)\" data-scheme=\"dark\"")
+        );
+        // Theme toggle: hidden until site.js shows it; theme.js runs before the first paint.
+        assert!(g.body.contains("data-theme-toggle"));
+        let theme_js = g.body.find("<script src=\"/assets/theme.js?v=").unwrap();
+        assert!(theme_js < g.body.find("<link rel=\"stylesheet\"").unwrap());
+        assert!(
+            !g.body[theme_js..]
+                .split('>')
+                .next()
+                .unwrap()
+                .contains("defer")
+        );
         // GitHub links are plain links; counts are absent until the server fetched them.
         assert!(
             g.body.contains(
@@ -931,6 +946,7 @@ mod tests {
             ("/assets/geist-latin-ext.woff2", "font/woff2"),
             ("/assets/site.css", "text/css; charset=utf-8"),
             ("/assets/site.js", "text/javascript; charset=utf-8"),
+            ("/assets/theme.js", "text/javascript; charset=utf-8"),
             ("/assets/Geist-OFL.txt", "text/plain; charset=utf-8"),
             ("/assets/shot-transfer-light.png", "image/png"),
             ("/assets/shot-transfer-dark.png", "image/png"),

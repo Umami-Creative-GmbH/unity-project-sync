@@ -1,3 +1,15 @@
+// Theme toggle (logic in theme.js): shown only with JavaScript. Applying again here also reaches
+// the elements parsed after theme.js ran (screenshots, the button itself).
+(() => {
+  const theme = window.upsTheme;
+  if (!theme) return;
+  theme.apply();
+  for (const button of document.querySelectorAll("[data-theme-toggle]")) {
+    button.hidden = false;
+    button.addEventListener("click", () => theme.toggle());
+  }
+})();
+
 // Progressive enhancement: a lightbox for the screenshots. Without JavaScript (or without
 // <dialog>) the links simply open the full-size image.
 (() => {
