@@ -12,7 +12,7 @@ import { BatchSyncProgress } from "@/components/batch-sync-progress";
 import { InlineNotice } from "@/components/folder-card";
 import { ProjectEditor } from "@/components/project-editor";
 import { ProjectList } from "@/components/project-list";
-import { SettingsDialog } from "@/components/settings-dialog";
+import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { ShutdownSwitch } from "@/components/shutdown-switch";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { appSettings, getAppSettings } from "@/hooks/use-app-settings";
 import { useBatchRunner } from "@/hooks/use-batch-runner";
 import { useFolderInfos } from "@/hooks/use-folder-infos";
+import { updates } from "@/hooks/use-update";
 import { api, errorMessage } from "@/lib/api";
 import {
   failedLastRun,
@@ -46,6 +47,8 @@ import { loadProjects, persistStep, saveProjects, type PersistMode } from "@/lib
 import type { SyncProject, SyncScope } from "@/lib/types";
 
 const APP_TITLE = "Unity Project Sync";
+/** The startup update check waits this long after the projects have loaded. */
+const STARTUP_UPDATE_CHECK_DELAY_MS = 4000;
 
 function App() {
   // ---- persisted ------------------------------------------------------------------------------
@@ -70,6 +73,9 @@ function App() {
   shutdownAfterRef.current = shutdownAfter;
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("sync");
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
   const [refreshKey, setRefreshKey] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
@@ -231,6 +237,37 @@ function App() {
   const batch = runner.state;
   const busy = runner.busy;
   const onHome = batch.phase === "idle" || batch.phase === "error";
+
+  // ---- updates --------------------------------------------------------------------------------
+  // Installing exits the app (the installer restarts it), which would kill a running scan or sync.
+  useEffect(() => updates.setBusy(busy), [busy]);
+
+  // One quiet check a few seconds after startup; failures are only logged. An update shows a
+  // single toast (never repeated this session); Settings → About has the details.
+  const startupCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || startupCheckedRef.current) return;
+    const timer = window.setTimeout(() => {
+      startupCheckedRef.current = true;
+      void updates.check({ silent: true }).then((state) => {
+        // Settings already open: the About page shows it (no toast on top).
+        if (state.status !== "available" || settingsOpenRef.current) return;
+        toast.info(`Update ${state.update.version} available`, {
+          id: "update-available",
+          description: "See what's new and install it from Settings.",
+          duration: 30_000,
+          action: {
+            label: "View",
+            onClick: () => {
+              setSettingsSection("about");
+              setSettingsOpen(true);
+            },
+          },
+        });
+      });
+    }, STARTUP_UPDATE_CHECK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [loaded]);
 
   // Each phase (list, scanning, preview, syncing, report) starts at the top, with the keyboard focus
   // on its heading (the previous view's controls are gone).
@@ -638,7 +675,13 @@ function App() {
 
       <ShutdownDialog open={shutdownOpen} onCancel={cancelShutdown} onShutdown={() => void shutdownNow()} />
 
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} busy={busy} />
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        busy={busy}
+        section={settingsSection}
+        onSectionChange={setSettingsSection}
+      />
     </div>
   );
 }

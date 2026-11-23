@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, type ComponentType } from "react";
 import {
   IconAlertTriangle,
   IconInfoCircle,
@@ -29,8 +29,11 @@ const SECTIONS: { id: SettingsSection; label: string; icon: ComponentType<IconPr
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** A scan or sync is running (thread settings are locked meanwhile). */
+  /** A scan or sync is running (thread settings and installing updates are locked meanwhile). */
   busy: boolean;
+  /** The section shown (kept by the parent, so e.g. an update toast can open "About"). */
+  section: SettingsSection;
+  onSectionChange: (section: SettingsSection) => void;
 }
 
 /**
@@ -38,8 +41,7 @@ interface SettingsDialogProps {
  * automatically (no Save button). Below ~700 px of dialog width the sidebar becomes a segmented
  * row under the title (container query on the dialog).
  */
-export function SettingsDialog({ open, onOpenChange, busy }: SettingsDialogProps) {
-  const [section, setSection] = useState<SettingsSection>("sync");
+export function SettingsDialog({ open, onOpenChange, busy, section, onSectionChange: setSection }: SettingsDialogProps) {
   const [settings, update] = useAppSettings();
   const status = useAppSettingsStatus();
   const app = useAppInfo();
@@ -140,7 +142,7 @@ export function SettingsDialog({ open, onOpenChange, busy }: SettingsDialogProps
                 />
               )}
               {section === "appearance" && <AppearanceSettings settings={settings} onChange={update} />}
-              {section === "about" && <AboutSettings />}
+              {section === "about" && <AboutSettings busy={busy} />}
             </div>
           </div>
         </div>
