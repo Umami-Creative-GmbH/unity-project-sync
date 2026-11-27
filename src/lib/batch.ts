@@ -644,6 +644,20 @@ export function shutdownBlocker(state: BatchState): string | null {
   return null;
 }
 
+/**
+ * Projects worth retrying right away, in batch order: those whose sync ended with errors and those
+ * whose scan or sync failed. Not skipped ones (pre-flight problems need a fix in the project first),
+ * not cancelled or excluded ones (the user chose that; "Rescan" covers them).
+ */
+export function retryableIds(state: BatchState): string[] {
+  return state.items
+    .filter((it) => {
+      const o = itemOutcome(it);
+      return o === "partial" || o === "failed";
+    })
+    .map((it) => it.projectId);
+}
+
 export interface BatchSummary {
   /** Overall result for the report header. */
   outcome: "success" | "warnings" | "partial" | "cancelled" | "failed";

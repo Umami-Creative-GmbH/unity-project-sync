@@ -13,6 +13,7 @@ import {
   newBatchItem,
   overallProgress,
   planCost,
+  retryableIds,
   shutdownBlocker,
   summarizeBatch,
   sumPlans,
@@ -23,7 +24,7 @@ import {
 import { speedPoints } from "@/lib/speed-history";
 import type { PlanSummary, SyncProgress, SyncReport } from "@/lib/types";
 
-const SCOPE = { includeRootFiles: true, folders: ["Assets"] };
+const SCOPE = { includeRootFiles: true, folders: ["Assets"], exclude: [] };
 
 let nextPlanId = 1;
 function plan(partial: Partial<PlanSummary> = {}): PlanSummary {
@@ -685,6 +686,34 @@ describe("outcomes, last runs and shutdown", () => {
     expect(lastRunFor(item("a", { scan: "scanned", plan: WORK(), run: "notRun" }), now)).toBeNull();
     expect(lastRunFor(item("a", { scan: "scanned", plan: WORK() }), now)).toBeNull();
     expect(lastRunFor(item("a", { skipReason: "x", scan: "skipped" }), now)).toBeNull();
+  });
+
+  it("retries only projects with sync errors or a failed scan/sync, in batch order", () => {
+    const state = reportState([
+      item("ok", { scan: "scanned", plan: WORK(), run: "done", report: report() }),
+      item("err", { scan: "scanned", plan: WORK(), run: "done", report: report({ errorCount: 1, errors: [{ path: "x", message: "y" }] }) }),
+      item("scanfail", { scan: "failed", scanError: "denied" }),
+      item("runfail", { scan: "scanned", plan: WORK(), run: "failed", runError: "gone" }),
+      item("skip", { skipReason: "Source folder not found", scan: "skipped" }),
+      item("excl", { scan: "scanned", plan: WORK() }),
+      item("insync", { scan: "scanned", plan: NO_WORK() }),
+      item("cancel", { scan: "scanned", plan: WORK(), run: "done", report: report({ cancelled: true }) }),
+      item("notrun", { scan: "scanned", plan: WORK(), run: "notRun" }),
+      item("scancancel", { scan: "cancelled" }),
+    ]);
+    expect(retryableIds(state)).toEqual(["err", "scanfail", "runfail"]);
+    expect(retryableIds(reportState([item("ok", { scan: "scanned", plan: WORK(), run: "done", report: report() })]))).toEqual([]);
+  });
+
+  // The report footer hides "Retry" for a cancelled batch (Rescan finishes it), although an
+  // earlier failed project is still retryable.
+  it("a cancelled batch can still hold retryable projects", () => {
+    const state = reportState([
+      item("runfail", { scan: "scanned", plan: WORK(), run: "failed", runError: "gone" }),
+      item("notrun", { scan: "scanned", plan: WORK(), run: "notRun" }),
+    ]);
+    expect(summarizeBatch(state).outcome).toBe("cancelled");
+    expect(retryableIds(state)).toEqual(["runfail"]);
   });
 });
 

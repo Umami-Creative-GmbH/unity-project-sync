@@ -34,7 +34,7 @@ import {
   withSource,
   withTarget,
 } from "@/lib/projects";
-import { sanitizeScope, scopesEqual } from "@/lib/scope";
+import { cloneScope, sanitizeScope, scopesEqual } from "@/lib/scope";
 import type { SyncProject, SyncScope } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -66,8 +66,11 @@ export function ProjectEditor({
   const [draft, setDraft] = useState<SyncProject>(project);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // A custom exclusion pattern typed but not added yet (it only reaches the scope via Add/Enter).
+  const [pendingExclude, setPendingExclude] = useState("");
   // Unsaved edits (for a new project, the fresh project is the baseline).
   const dirty =
+    pendingExclude !== "" ||
     draft.name !== project.name ||
     draft.source !== project.source ||
     draft.target !== project.target ||
@@ -108,6 +111,12 @@ export function ProjectEditor({
   };
 
   const save = () => {
+    // Never drop a typed pattern silently; adding it may fail, and the user must see why.
+    if (pendingExclude) {
+      toast.warning("Add or clear the custom exclusion pattern first", { description: pendingExclude });
+      document.getElementById("custom-exclude")?.focus();
+      return;
+    }
     const name = draft.name.trim() || defaultProjectName(draft.source);
     onSave({ ...draft, name, scope: sanitizeScope(draft.scope) });
   };
@@ -246,10 +255,11 @@ export function ProjectEditor({
             isDefault={scopesEqual(draft.scope, defaultScope)}
             sourceInfo={source.info}
             onChange={(s) => setDraft((d) => ({ ...d, scope: sanitizeScope(s) }))}
+            onPendingExcludeChange={setPendingExclude}
             onReset={() =>
               setDraft((d) => ({
                 ...d,
-                scope: { includeRootFiles: defaultScope.includeRootFiles, folders: [...defaultScope.folders] },
+                scope: cloneScope(defaultScope),
               }))
             }
           />

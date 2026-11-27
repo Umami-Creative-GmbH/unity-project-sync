@@ -10,6 +10,7 @@ import {
   initialBatch,
   isBatchBusy,
   newBatchItem,
+  retryableIds,
   type BatchAction,
   type BatchItem,
   type BatchState,
@@ -52,6 +53,11 @@ export interface BatchRunner {
   startSync: () => void;
   /** Rescan the projects of the current batch (preview or report). */
   rescan: () => void;
+  /**
+   * Report → scan the projects that ended with errors or failed again, in the same mode as this
+   * batch (preview or sync now).
+   */
+  retry: () => void;
   /** Cancels the current scan/sync and skips the remaining ones. */
   cancel: () => void;
   /** Leaves preview/report/error for the list (discarding plans that won't run). */
@@ -151,7 +157,7 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
         name: projectDisplayName(p),
         source: p.source ?? "",
         target: p.target ?? "",
-        scope: { includeRootFiles: p.scope.includeRootFiles, folders: [...p.scope.folders] },
+        scope: { includeRootFiles: p.scope.includeRootFiles, folders: [...p.scope.folders], exclude: [...p.scope.exclude] },
         skipReason: skip.get(p.id) ?? conflicts.skipped[p.id] ?? null,
         warnings: conflicts.warnings[p.id] ?? [],
       }),
@@ -309,6 +315,15 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
     if (ids.length > 0) start(ids, false);
   }, [start]);
 
+  // Keeps the batch's mode: a "Sync now" batch retries without preview; a preview batch shows the
+  // preview again (the retried projects get new plans, so their deletions need a new confirmation).
+  const retry = useCallback(() => {
+    const s = stateRef.current;
+    if (s.phase !== "report") return;
+    const ids = retryableIds(s);
+    if (ids.length > 0) start(ids, s.autoSync);
+  }, [start]);
+
   const cancel = useCallback(() => {
     if (!isBatchBusy(stateRef.current)) return;
     cancelRef.current = true;
@@ -323,5 +338,5 @@ export function useBatchRunner(options: BatchRunnerOptions): BatchRunner {
     dispatch({ type: "reset" });
   }, [discardHeldPlans, dispatch]);
 
-  return { state, busy: isBatchBusy(state), start, setInclude, startSync, rescan, cancel, close };
+  return { state, busy: isBatchBusy(state), start, setInclude, startSync, rescan, retry, cancel, close };
 }

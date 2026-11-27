@@ -1,5 +1,6 @@
 import { IconLoader2, IconX } from "@tabler/icons-react";
 
+import { ActionFooter, ActionFooterStatus } from "@/components/action-footer";
 import { BatchStatusList } from "@/components/batch-status-list";
 import { ScanProgressView } from "@/components/scan-progress";
 import { ShutdownSwitch } from "@/components/shutdown-switch";
@@ -8,15 +9,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { BatchState } from "@/lib/batch";
 import { plural } from "@/lib/format";
 
-interface BatchScanProgressProps {
-  state: BatchState;
-  onCancel: () => void;
-  shutdownAfter: boolean;
-  onShutdownAfterChange: (v: boolean) => void;
-}
-
-/** Pre-flight check and the sequential scans of a batch. */
-export function BatchScanProgress({ state, onCancel, shutdownAfter, onShutdownAfterChange }: BatchScanProgressProps) {
+/** Pre-flight check and the sequential scans of a batch (its actions: BatchScanFooter). */
+export function BatchScanProgress({ state }: { state: BatchState }) {
   const scannable = state.items.filter((it) => it.scan !== "skipped");
   const current =
     state.items.find((it) => it.projectId === state.currentId) ?? scannable.find((it) => it.scan === "pending") ?? null;
@@ -39,10 +33,6 @@ export function BatchScanProgress({ state, onCancel, shutdownAfter, onShutdownAf
                 Inspecting the folders of {plural(state.chosenIds.length, "project")} before scanning.
               </p>
             </div>
-            <Button variant="outline" onClick={onCancel} disabled={state.cancelling}>
-              <IconX data-icon="inline-start" />
-              Cancel
-            </Button>
           </CardContent>
         </Card>
       ) : (
@@ -52,7 +42,6 @@ export function BatchScanProgress({ state, onCancel, shutdownAfter, onShutdownAf
           startedAt={current?.scanStartedAt ?? Date.now()}
           autoSync={state.autoSync}
           cancelling={state.cancelling}
-          onCancel={onCancel}
           context={
             current
               ? scannable.length > 1
@@ -72,8 +61,39 @@ export function BatchScanProgress({ state, onCancel, shutdownAfter, onShutdownAf
           }
         />
       )}
-
-      <ShutdownSwitch id="shutdown-while-scanning" checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
     </div>
+  );
+}
+
+interface BatchScanFooterProps {
+  state: BatchState;
+  onCancel: () => void;
+  shutdownAfter: boolean;
+  onShutdownAfterChange: (v: boolean) => void;
+}
+
+/** Checking/scanning actions for the fixed footer. */
+export function BatchScanFooter({ state, onCancel, shutdownAfter, onShutdownAfterChange }: BatchScanFooterProps) {
+  return (
+    <ActionFooter label="Scan actions">
+      <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
+      <ActionFooterStatus>
+        {state.cancelling
+          ? "Cancelling…"
+          : state.autoSync
+            ? "Syncing starts when the scans finish"
+            : "The preview opens when the scans finish"}
+      </ActionFooterStatus>
+      <Button
+        variant="outline"
+        size="lg"
+        onClick={onCancel}
+        disabled={state.cancelling}
+        aria-label={state.phase === "preflight" ? "Cancel the check" : "Cancel the scan"}
+      >
+        {state.cancelling ? <IconLoader2 className="animate-spin" data-icon="inline-start" /> : <IconX data-icon="inline-start" />}
+        Cancel
+      </Button>
+    </ActionFooter>
   );
 }

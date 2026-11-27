@@ -1,20 +1,37 @@
 import { useState } from "react";
-import { IconChevronRight, IconClock, IconDatabase, IconFiles, IconRefresh, IconTrash } from "@tabler/icons-react";
+import {
+  IconChevronRight,
+  IconClock,
+  IconDatabase,
+  IconFiles,
+  IconRefresh,
+  IconRotateClockwise,
+  IconTrash,
+} from "@tabler/icons-react";
 
+import { ActionFooter, ActionFooterStatus } from "@/components/action-footer";
 import { OUTCOME_META, OutcomeIcon, OutcomeMedia } from "@/components/outcome";
+import { ShutdownSwitch } from "@/components/shutdown-switch";
 import { Metric, SyncReportDetails } from "@/components/sync-report";
 import { toneText } from "@/components/tone";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { activeWarnings, itemOutcome, summarizeBatch, type BatchItem, type BatchState, type BatchSummary } from "@/lib/batch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  activeWarnings,
+  itemOutcome,
+  retryableIds,
+  summarizeBatch,
+  type BatchItem,
+  type BatchState,
+  type BatchSummary,
+} from "@/lib/batch";
 import { formatBytes, formatCount, formatDuration, plural } from "@/lib/format";
 import { reportDeleted, reportErrorCount, reportFilesWritten } from "@/lib/report";
 import { cn } from "@/lib/utils";
 
 interface BatchReportProps {
   state: BatchState;
-  onRescan: () => void;
-  onDone: () => void;
 }
 
 function headerText(s: BatchSummary, single: boolean): { title: string; text: string } {
@@ -51,6 +68,7 @@ function headerText(s: BatchSummary, single: boolean): { title: string; text: st
             : `${s.excluded > 0 ? "Everything included" : "Everything in the plan"} was synced, but some paths were skipped during the scan.`,
         ),
       };
+    // Both "partial" and a real failure always have projects to retry (see retryableIds).
     case "partial":
       return {
         title: s.errorCount > 0 ? `Finished with ${plural(s.errorCount, "error")}` : "Finished with problems",
@@ -58,12 +76,12 @@ function headerText(s: BatchSummary, single: boolean): { title: string; text: st
           s.failed > 0
             ? `${plural(s.failed, "project")} failed. ${
                 s.synced + s.withErrors > 0
-                  ? `The other${s.excluded > 0 ? " included" : ""} projects were synced — fix`
+                  ? `The other${s.excluded > 0 ? " included" : ""} projects were synced. `
                   : s.inSync > 0
-                    ? "The others were already in sync. Fix"
-                    : "Fix"
-              } the problems and rescan.`
-            : `${others} was synced. Fix the problems below and rescan.`,
+                    ? "The others were already in sync. "
+                    : ""
+              }Retry, or fix the problems below and rescan.`
+            : `${others} was synced. Retry, or fix the problems below and rescan.`,
         ),
       };
     case "cancelled":
@@ -81,13 +99,13 @@ function headerText(s: BatchSummary, single: boolean): { title: string; text: st
             title: "Sync failed",
             text:
               s.skipped > 0
-                ? `No project could be synced (${formatCount(s.skipped)} skipped). See the details below.`
-                : "No project could be synced. See the details below.",
+                ? `No project could be synced (${formatCount(s.skipped)} skipped). See the details below, then retry.`
+                : "No project could be synced. See the details below, then retry.",
           };
   }
 }
-/** Report of a batch: overall outcome, totals and one expandable row per project. */
-export function BatchReport({ state, onRescan, onDone }: BatchReportProps) {
+/** Report of a batch: overall outcome, totals and one expandable row per project (actions: BatchReportFooter). */
+export function BatchReport({ state }: BatchReportProps) {
   const summary = summarizeBatch(state);
   const single = state.items.length === 1;
   const header = headerText(summary, single);
@@ -132,15 +150,65 @@ export function BatchReport({ state, onRescan, onDone }: BatchReportProps) {
           ))}
         </ul>
       </Card>
-
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button variant="outline" onClick={onRescan}>
-          <IconRefresh data-icon="inline-start" />
-          {single ? "Scan again" : "Rescan these projects"}
-        </Button>
-        <Button onClick={onDone}>Done</Button>
-      </div>
     </div>
+  );
+}
+
+interface BatchReportFooterProps {
+  state: BatchState;
+  onRescan: () => void;
+  /** Scan the projects of retryableIds() again, in the batch's mode (preview or sync now). */
+  onRetry: () => void;
+  onDone: () => void;
+  shutdownAfter: boolean;
+  onShutdownAfterChange: (v: boolean) => void;
+}
+
+/**
+ * Report actions for the fixed footer. When projects ended with errors or failed, "Retry" is the
+ * primary action (a new batch of just those in the same mode, so "Shut down after" applies to it
+ * again). A cancelled batch is finished with "Rescan" instead.
+ */
+export function BatchReportFooter({
+  state,
+  onRescan,
+  onRetry,
+  onDone,
+  shutdownAfter,
+  onShutdownAfterChange,
+}: BatchReportFooterProps) {
+  const single = state.items.length === 1;
+  const cancelled = summarizeBatch(state).outcome === "cancelled";
+  // A cancelled batch is finished with "Rescan" (as the header and the toast say), not by retrying only the failed projects.
+  const retryCount = cancelled ? 0 : retryableIds(state).length;
+  return (
+    <ActionFooter label="Report actions">
+      {retryCount > 0 && (
+        <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
+      )}
+      <ActionFooterStatus />
+      <Button variant={cancelled ? "default" : "outline"} size="lg" onClick={onRescan}>
+        <IconRefresh data-icon="inline-start" />
+        {single ? "Scan again" : "Rescan these projects"}
+      </Button>
+      <Button variant={retryCount > 0 || cancelled ? "outline" : "default"} size="lg" onClick={onDone}>
+        Done
+      </Button>
+      {retryCount > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button size="lg" onClick={onRetry}>
+              <IconRotateClockwise data-icon="inline-start" />
+              {single ? "Retry" : `Retry failed (${retryCount})`}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {state.autoSync ? "Scan and sync" : "Scan"} {single ? "the project" : `the ${plural(retryCount, "project")}`}{" "}
+            with errors or failures again, {state.autoSync ? "right away — no preview" : "and show the preview"}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </ActionFooter>
   );
 }
 

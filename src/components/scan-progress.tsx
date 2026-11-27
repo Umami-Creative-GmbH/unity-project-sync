@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { IconBolt, IconLoader2, IconSearch, IconX } from "@tabler/icons-react";
+import { IconBolt, IconSearch } from "@tabler/icons-react";
 
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCount, formatSeconds } from "@/lib/format";
 import type { ScanProgress } from "@/lib/types";
@@ -19,12 +18,12 @@ interface ScanProgressViewProps {
   startedAt: number;
   autoSync: boolean;
   cancelling: boolean;
-  onCancel: () => void;
   /** Line above the phase title, e.g. "Project 2 of 5 · MyGame". */
   context?: ReactNode;
 }
 
-export function ScanProgressView({ progress, startedAt, autoSync, cancelling, onCancel, context }: ScanProgressViewProps) {
+/** Progress of the running scan (Cancel lives in the app's action footer). */
+export function ScanProgressView({ progress, startedAt, autoSync, cancelling, context }: ScanProgressViewProps) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 500);
@@ -51,10 +50,6 @@ export function ScanProgressView({ progress, startedAt, autoSync, cancelling, on
               {formatSeconds((now - startedAt) / 1000)} elapsed
             </p>
           </div>
-          <Button variant="outline" onClick={onCancel} disabled={cancelling}>
-            {cancelling ? <IconLoader2 className="animate-spin" data-icon="inline-start" /> : <IconX data-icon="inline-start" />}
-            Cancel
-          </Button>
         </div>
 
         <div

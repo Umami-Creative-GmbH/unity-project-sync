@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::fsutil::{
     Removed, TreeRemove, join_rel, key_of, last_rel, make_writable, mtime_of, parent_rel,
-    rel_string, remove_dir_parallel, remove_dir_robust, remove_file_robust, self_and_ancestors,
-    set_mtime,
+    rel_string, remove_dir_parallel_keeping, remove_dir_robust, remove_file_robust,
+    self_and_ancestors, set_mtime,
 };
 use crate::model::{MAX_REPORTED_ERRORS, SyncError, SyncPhase, SyncProgress, SyncReport};
 use crate::scan::{CaseRename, DirDelete, FileDelete, Plan, Transfer, TransferKind};
@@ -759,11 +759,13 @@ fn delete_file(plan: &Plan, f: &FileDelete, sh: &Shared) {
 #[derive(Debug)]
 enum AfterTree {
     Done,
+    /// Finished, but excluded entries (and the folders above them) were left in place.
+    Kept,
     Stopped,
     /// Part of the tree failed and the run was stopped (user cancel / fatal abort).
     StoppedWithError(io::Error),
     /// Part of the tree failed: retry the rest with the robust (uncancellable) removal.
-    Fallback,
+    Fallback(io::Error),
 }
 
 /// `stopped` is the run's own stop flag, checked after the walk: an `Err` wins over sibling
@@ -771,9 +773,11 @@ enum AfterTree {
 fn after_tree_removal(result: io::Result<TreeRemove>, stopped: bool) -> AfterTree {
     match result {
         Ok(TreeRemove::Done) => AfterTree::Done,
+        // Excluded entries left in place: the tree is as done as it may get.
+        Ok(TreeRemove::Kept) => AfterTree::Kept,
         Ok(TreeRemove::Stopped) => AfterTree::Stopped,
         Err(e) if stopped => AfterTree::StoppedWithError(e),
-        Err(_) => AfterTree::Fallback,
+        Err(e) => AfterTree::Fallback(e),
     }
 }
 
@@ -812,7 +816,10 @@ fn delete_dir(plan: &Plan, d: &DirDelete, sh: &Shared) -> Option<u64> {
     // The root of a type-conflict dir is replaced by a file (counted as an update).
     let (planned_files, planned_dirs) = (d.nested_files, d.nested_dirs + u64::from(!d.conflict));
     let (files, dirs, seen) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
-    let result = remove_dir_parallel(&path, &|| sh.stopped(), &|p, kind| {
+    // Excluded entries are never deleted (the scan plans no such tree; this covers files that
+    // appeared after it): they and their folders stay.
+    let keep = |name: &str| plan.excludes.matches(name);
+    let on_removed = |p: &Path, kind: Removed| {
         sh.delete_done.fetch_add(1, Ordering::Relaxed);
         let n = seen.fetch_add(1, Ordering::Relaxed) + 1;
         if n % DELETE_CURRENT_EVERY == 0
@@ -832,10 +839,23 @@ fn delete_dir(plan: &Plan, d: &DirDelete, sh: &Shared) -> Option<u64> {
             }
             Removed::Link => {}
         }
-    });
-    let seen = seen.into_inner();
+    };
+    let result = remove_dir_parallel_keeping(&path, &|| sh.stopped(), &keep, &on_removed);
+    let seen = || seen.load(Ordering::Relaxed);
+    // The folder must give way to a source file but still holds excluded entries: say why it stays
+    // (the transfer onto it is then skipped, see `run_transfer`).
+    let kept = || {
+        if d.conflict {
+            sh.error(
+                &d.rel,
+                "Left in place: the folder contains excluded files, so the source file cannot replace it".into(),
+            );
+        }
+        Some(seen())
+    };
     match after_tree_removal(result, sh.stopped()) {
-        AfterTree::Done => Some(seen),
+        AfterTree::Done => Some(seen()),
+        AfterTree::Kept => kept(),
         AfterTree::Stopped => None,
         AfterTree::StoppedWithError(e) => {
             // Cancelled while (or after) part of the tree failed: keep the error, but never run
@@ -843,20 +863,39 @@ fn delete_dir(plan: &Plan, d: &DirDelete, sh: &Shared) -> Option<u64> {
             sh.error(&d.rel, format!("Delete failed: {e}"));
             None
         }
-        AfterTree::Fallback => {
+        // The robust fallback removes everything, excluded entries included: with exclusions,
+        // retry the rest once entry by entry instead (covers transient locks / sharing
+        // violations). The retry reports through the same `on_removed`, so no reconciling.
+        AfterTree::Fallback(_) if !plan.excludes.is_empty() => {
+            let retry = remove_dir_parallel_keeping(&path, &|| sh.stopped(), &keep, &on_removed);
+            match after_tree_removal(retry, sh.stopped()) {
+                AfterTree::Done => Some(seen()),
+                AfterTree::Kept => kept(),
+                AfterTree::Stopped => None,
+                AfterTree::StoppedWithError(e) => {
+                    sh.error(&d.rel, format!("Delete failed: {e}"));
+                    None
+                }
+                AfterTree::Fallback(e) => {
+                    sh.error(&d.rel, format!("Delete failed: {e}"));
+                    Some(seen())
+                }
+            }
+        }
+        AfterTree::Fallback(_) => {
             if let Err(e) = remove_dir_robust(&path) {
                 sh.error(&d.rel, format!("Delete failed: {e}"));
             } else {
                 sh.deleted_files.fetch_add(
-                    planned_files.saturating_sub(files.into_inner()),
+                    planned_files.saturating_sub(files.load(Ordering::Relaxed)),
                     Ordering::Relaxed,
                 );
                 sh.deleted_dirs.fetch_add(
-                    planned_dirs.saturating_sub(dirs.into_inner()),
+                    planned_dirs.saturating_sub(dirs.load(Ordering::Relaxed)),
                     Ordering::Relaxed,
                 );
             }
-            Some(seen)
+            Some(seen())
         }
     }
 }
@@ -916,10 +955,26 @@ fn run_transfer(plan: &Plan, t: &Transfer, sh: &Shared) {
         {
             let _ = fs::create_dir_all(parent);
         }
-        match t.kind {
-            TransferKind::Copy => copy_file(&src, &dst, sh.cancel, &mut fp).map(Outcome::Copied),
-            TransferKind::Update => copy_file(&src, &dst, sh.cancel, &mut fp).map(Outcome::Updated),
-            TransferKind::Verify => verify(&src, &dst, sh.cancel, &mut fp),
+        // A type-conflict folder that kept excluded entries (see `delete_dir`) is still there:
+        // skip the copy rather than let the replace fail with a misleading error.
+        if !matches!(t.kind, TransferKind::Verify)
+            && fs::symlink_metadata(&dst).is_ok_and(|m| m.is_dir())
+        {
+            Err(OpError::Failed(if plan.excludes.is_empty() {
+                "The target is a folder; left in place".into()
+            } else {
+                "The target is a folder that contains excluded files; left in place".into()
+            }))
+        } else {
+            match t.kind {
+                TransferKind::Copy => {
+                    copy_file(&src, &dst, sh.cancel, &mut fp).map(Outcome::Copied)
+                }
+                TransferKind::Update => {
+                    copy_file(&src, &dst, sh.cancel, &mut fp).map(Outcome::Updated)
+                }
+                TransferKind::Verify => verify(&src, &dst, sh.cancel, &mut fp),
+            }
         }
     };
     match result {
@@ -1177,7 +1232,11 @@ mod tests {
         ));
         assert!(matches!(
             after_tree_removal(err(), false),
-            AfterTree::Fallback
+            AfterTree::Fallback(_)
+        ));
+        assert!(matches!(
+            after_tree_removal(Ok(TreeRemove::Kept), false),
+            AfterTree::Kept
         ));
         assert!(matches!(
             after_tree_removal(Ok(TreeRemove::Stopped), true),

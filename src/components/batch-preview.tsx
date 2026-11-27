@@ -12,6 +12,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 
+import { ActionFooter, ActionFooterStatus } from "@/components/action-footer";
 import { ACTION_META } from "@/components/plan-meta";
 import { AbsolutePath } from "@/components/path-text";
 import { PlanDetails, PlanStatTiles } from "@/components/plan-preview";
@@ -41,24 +42,10 @@ import { cn } from "@/lib/utils";
 interface BatchPreviewProps {
   state: BatchState;
   onSetInclude: (projectId: string, include: boolean) => void;
-  onBack: () => void;
-  onRescan: () => void;
-  onStart: () => void;
-  shutdownAfter: boolean;
-  onShutdownAfterChange: (v: boolean) => void;
 }
 
-/** One combined preview for all scanned projects of a batch. */
-export function BatchPreview({
-  state,
-  onSetInclude,
-  onBack,
-  onRescan,
-  onStart,
-  shutdownAfter,
-  onShutdownAfterChange,
-}: BatchPreviewProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
+/** One combined preview for all scanned projects of a batch (its actions: BatchPreviewFooter). */
+export function BatchPreview({ state, onSetInclude }: BatchPreviewProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     state.items.length === 1 ? new Set([state.items[0].projectId]) : new Set(),
   );
@@ -70,7 +57,6 @@ export function BatchPreview({
   // "Unchanged" also counts projects that are already in sync (they can't be included).
   const unchangedTotals = sumPlans(scanned.filter((it) => it.include || !hasWork(it.plan!)).map((it) => it.plan!)).unchanged;
   const tileCounts = { ...totals, unchanged: unchangedTotals };
-  const deleting = included.filter((it) => it.plan!.delete.files + it.plan!.delete.dirs > 0);
   const deleteCount = totals.delete.files + totals.delete.dirs;
   const transferFiles = totals.copy.files + totals.update.files + totals.verify.files;
   const scanStats = scanSummary(scanned.map((it) => it.plan!));
@@ -82,11 +68,6 @@ export function BatchPreview({
       else next.add(id);
       return next;
     });
-
-  const handleStart = () => {
-    if (deleting.length > 0) setConfirmOpen(true);
-    else onStart();
-  };
 
   const headline =
     withWork.length === 0
@@ -152,36 +133,73 @@ export function BatchPreview({
           ))}
         </ul>
       </Card>
+    </div>
+  );
+}
 
-      <ShutdownSwitch id="shutdown-in-preview" checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
+interface BatchPreviewFooterProps {
+  state: BatchState;
+  onBack: () => void;
+  onRescan: () => void;
+  onStart: () => void;
+  shutdownAfter: boolean;
+  onShutdownAfterChange: (v: boolean) => void;
+}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" onClick={onBack}>
-          <IconArrowLeft data-icon="inline-start" />
-          Back
-        </Button>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={onRescan}>
-            <IconRefresh data-icon="inline-start" />
-            Rescan
-          </Button>
-          <Button
-            size="lg"
-            onClick={handleStart}
-            disabled={included.length === 0}
-            aria-label={deleteCount > 0 ? `Start sync, including ${formatCount(deleteCount)} deletions` : "Start sync"}
-          >
-            <IconPlayerPlay data-icon="inline-start" />
-            Start sync{included.length > 1 && ` (${included.length})`}
-            {deleteCount > 0 && (
-              <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-destructive px-1.5 py-px text-[0.7rem] font-medium text-white">
-                <IconTrash className="size-3" />
-                {formatCount(deleteCount)}
-              </span>
-            )}
-          </Button>
-        </div>
-      </div>
+/** The preview's actions for the fixed footer; deletions are confirmed before the sync starts. */
+export function BatchPreviewFooter({
+  state,
+  onBack,
+  onRescan,
+  onStart,
+  shutdownAfter,
+  onShutdownAfterChange,
+}: BatchPreviewFooterProps) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const included = includedItems(state);
+  const totals = sumPlans(included.map((it) => it.plan!));
+  const deleting = included.filter((it) => it.plan!.delete.files + it.plan!.delete.dirs > 0);
+  const deleteCount = totals.delete.files + totals.delete.dirs;
+  const hasChanges = state.items.some((it) => it.plan && hasWork(it.plan));
+
+  const handleStart = () => {
+    if (deleting.length > 0) setConfirmOpen(true);
+    else onStart();
+  };
+
+  return (
+    <ActionFooter label="Preview actions">
+      <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
+      <ActionFooterStatus>
+        {included.length > 0
+          ? `${totals.verify.files > 0 ? "Up to " : ""}${formatBytes(totals.totalBytes)} to transfer`
+          : hasChanges
+            ? "No project selected"
+            : "Nothing to sync"}
+      </ActionFooterStatus>
+      <Button variant="ghost" size="lg" onClick={onBack}>
+        <IconArrowLeft data-icon="inline-start" />
+        Back
+      </Button>
+      <Button variant="outline" size="lg" onClick={onRescan}>
+        <IconRefresh data-icon="inline-start" />
+        Rescan
+      </Button>
+      <Button
+        size="lg"
+        onClick={handleStart}
+        disabled={included.length === 0}
+        aria-label={deleteCount > 0 ? `Start sync, including ${formatCount(deleteCount)} deletions` : "Start sync"}
+      >
+        <IconPlayerPlay data-icon="inline-start" />
+        Start sync{included.length > 1 && ` (${included.length})`}
+        {deleteCount > 0 && (
+          <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-destructive px-1.5 py-px text-[0.7rem] font-medium text-white">
+            <IconTrash className="size-3" />
+            {formatCount(deleteCount)}
+          </span>
+        )}
+      </Button>
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent className="data-[size=default]:sm:max-w-lg">
@@ -220,7 +238,7 @@ export function BatchPreview({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </ActionFooter>
   );
 }
 

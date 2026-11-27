@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::exclude::{Excludes, normalize_patterns};
 use crate::fsutil::{
     is_case_insensitive, key_of, last_rel, mtime_of, parent_rel, self_and_ancestors, time_diff,
 };
@@ -96,6 +97,8 @@ pub struct Plan {
     pub source: PathBuf,
     pub target: PathBuf,
     pub scope: SyncScope,
+    /// `scope.exclude`, compiled.
+    pub excludes: Excludes,
     /// Paths are matched case-insensitively (see [`key_of`]).
     pub fold: bool,
     /// Target files to delete (extra files and type-conflict files).
@@ -115,7 +118,8 @@ impl Plan {
         self.transfers.iter().map(|t| t.size).sum()
     }
 
-    /// True when `rel` lies inside the plan's scope (defensive check before touching the target).
+    /// True when `rel` lies inside the plan's scope and is not excluded (defensive check before
+    /// touching the target).
     pub fn in_scope(&self, rel: &str) -> bool {
         if rel.is_empty()
             || rel
@@ -145,9 +149,12 @@ impl Plan {
                     .split('~')
                     .skip(1)
                     .any(|after| after.starts_with(|c: char| c.is_ascii_digit()));
-            !alias_like && (self.scope.include_root_files || is_scope_folder(rel))
+            // The chosen scope folders themselves are never excluded, root files may be.
+            !alias_like
+                && (is_scope_folder(rel)
+                    || (self.scope.include_root_files && !self.excludes.matches(rel)))
         } else {
-            is_scope_folder(top)
+            is_scope_folder(top) && !self.excludes.matches_any_part(rel.split('/').skip(1))
         }
     }
 }
@@ -207,9 +214,11 @@ pub fn validate_scope(scope: &SyncScope) -> Result<SyncScope, ScanError> {
     if folders.is_empty() && !scope.include_root_files {
         return invalid("Nothing to sync: the scope has no folders and root files are excluded.");
     }
+    let exclude = normalize_patterns(&scope.exclude).map_err(ScanError::Invalid)?;
     Ok(SyncScope {
         include_root_files: scope.include_root_files,
         folders,
+        exclude,
     })
 }
 
@@ -358,6 +367,8 @@ struct Tree {
     collisions: HashSet<String>,
     /// keys of out-of-scope top-level directories (only collected with root files enabled).
     other_root: HashSet<String>,
+    /// keys of excluded entries below the scope folders (not walked; their folders are kept).
+    excluded: HashSet<String>,
     warnings: Vec<String>,
 }
 
@@ -422,6 +433,7 @@ impl Throttle {
 struct WalkCtx<'a> {
     side: Side,
     fold: bool,
+    excludes: &'a Excludes,
     cancel: &'a AtomicBool,
     /// Set when the other side failed: stop early (reported as `Cancelled`, never shown).
     abort: &'a AtomicBool,
@@ -511,6 +523,10 @@ fn build_tree(root: &Path, scope: &SyncScope, ctx: &WalkCtx) -> Result<Tree, Sca
             let key = ctx.key(&name);
             if folder_keys.contains(&key) {
                 continue; // handled by the folder walk below
+            }
+            // Excluded root entries are ignored on both sides (never copied, never deleted).
+            if ctx.excludes.matches(&name) {
+                continue;
             }
             // Library/, Temp/, .git (a directory, or the file of a git worktree/submodule), ...
             // are never synced, whatever their type, on either side.
@@ -640,6 +656,8 @@ enum ItemKind {
     FileError(String),
     /// Symbolic link / junction / special file: never followed or touched.
     Link,
+    /// Matches an exclusion pattern: ignored, its folder is never deleted.
+    Excluded,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -702,6 +720,14 @@ impl<'a> Walker<'a> {
                         continue;
                     };
                     let rel = format!("{dir_rel}/{name}");
+                    // Excluded: never walked; only recorded so its folders are never deleted.
+                    if self.ctx.excludes.matches(name) {
+                        out.push(Item {
+                            rel,
+                            kind: ItemKind::Excluded,
+                        });
+                        continue;
+                    }
                     let ft = match entry.file_type() {
                         Ok(ft) => ft,
                         Err(e) => {
@@ -779,6 +805,9 @@ fn merge_items(items: Vec<Item>, ctx: &WalkCtx, tree: &mut Tree) {
             ItemKind::ReadError(msg) | ItemKind::BadName(msg) => {
                 tree.warnings.push(msg);
                 tree.errors.insert(key);
+            }
+            ItemKind::Excluded => {
+                tree.excluded.insert(key);
             }
             _ if !tree.claim(&key, &rel, side) => {}
             ItemKind::Dir => {
@@ -916,6 +945,15 @@ fn diff(src: &Tree, tgt: &Tree, ctx: &WalkCtx) -> Result<Diff, ScanError> {
         self_and_ancestors(key).any(|a| src.collisions.contains(a) || tgt.collisions.contains(a))
     };
 
+    // Target folders holding an excluded entry at any depth: never deleted as a whole, so the
+    // excluded entries survive (their other contents are still mirrored).
+    let holds_excluded: HashSet<&str> = tgt
+        .excluded
+        .iter()
+        .filter_map(|k| parent_rel(k))
+        .flat_map(self_and_ancestors)
+        .collect();
+
     let mut blocked_links: HashSet<&str> = HashSet::new();
     // key of a target dir replaced by a source file -> index into d.delete_dirs
     let mut conflict_dirs: HashMap<&str, usize> = HashMap::new();
@@ -967,6 +1005,12 @@ fn diff(src: &Tree, tgt: &Tree, ctx: &WalkCtx) -> Result<Diff, ScanError> {
                     d.case_rename(key, s, t, false);
                 }
             }
+            (Kind::File, Some(_)) if holds_excluded.contains(key.as_str()) => {
+                d.warnings.push(format!(
+                    "Skipped {}: the target has a folder with that name that contains excluded files.",
+                    s.rel
+                ));
+            }
             (Kind::File, Some(t)) => {
                 // Target has a directory where the source has a file.
                 conflict_dirs.insert(key.as_str(), d.delete_dirs.len());
@@ -1003,6 +1047,9 @@ fn diff(src: &Tree, tgt: &Tree, ctx: &WalkCtx) -> Result<Diff, ScanError> {
     // key of a deleted directory root -> index into d.delete_dirs. The contents of type-conflict
     // dirs are deleted too, so they are counted (and confirmed) like any other deletion.
     let mut delete_roots: HashMap<&str, usize> = conflict_dirs.clone();
+    // Extra target dirs that stay because they hold excluded entries; their other contents are
+    // deleted one by one.
+    let mut kept: HashSet<&str> = HashSet::new();
     let mut tgt_keys: Vec<&String> = tgt.nodes.keys().collect();
     tgt_keys.sort_unstable(); // ancestors always sort before their descendants
     for key in tgt_keys {
@@ -1011,12 +1058,15 @@ fn diff(src: &Tree, tgt: &Tree, ctx: &WalkCtx) -> Result<Diff, ScanError> {
             continue;
         }
         let t = &tgt.nodes[key];
-        let parent_is_src_dir = match parent_rel(key) {
+        let parent_stays = match parent_rel(key) {
             None => true,
-            Some(p) => src.nodes.get(p).is_some_and(|n| n.kind == Kind::Dir),
+            Some(p) => src.nodes.get(p).is_some_and(|n| n.kind == Kind::Dir) || kept.contains(p),
         };
-        if parent_is_src_dir {
+        if parent_stays {
             match t.kind {
+                Kind::Dir if holds_excluded.contains(key.as_str()) => {
+                    kept.insert(key.as_str());
+                }
                 Kind::File => {
                     d.delete.files += 1;
                     d.delete.bytes += t.size;
@@ -1118,6 +1168,8 @@ pub fn scan(
     let fold = is_case_insensitive(&v.source, false)
         || is_case_insensitive(nearest_existing(&v.target), true);
 
+    let excludes = Excludes::new(&v.scope.exclude);
+
     let throttle = Throttle::new();
     let src_count = AtomicU64::new(0);
     let tgt_count = AtomicU64::new(0);
@@ -1154,6 +1206,7 @@ pub fn scan(
     let src_ctx = WalkCtx {
         side: Side::Source,
         fold,
+        excludes: &excludes,
         cancel,
         abort: &abort,
         counter: &src_count,
@@ -1162,6 +1215,7 @@ pub fn scan(
     let tgt_ctx = WalkCtx {
         side: Side::Target,
         fold,
+        excludes: &excludes,
         cancel,
         abort: &abort,
         counter: &tgt_count,
@@ -1198,6 +1252,7 @@ pub fn scan(
     let cmp_ctx = WalkCtx {
         side: Side::Source,
         fold,
+        excludes: &excludes,
         cancel,
         abort: &abort,
         counter: &cmp_count,
@@ -1261,6 +1316,7 @@ pub fn scan(
         source: v.source,
         target: v.target,
         scope: v.scope,
+        excludes,
         fold,
         delete_files: d.delete_files,
         delete_dirs: d.delete_dirs,

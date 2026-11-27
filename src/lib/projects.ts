@@ -1,6 +1,6 @@
 // Pure helpers for saved projects (source → target pairs): creation, naming, validation and the
 // cross-project conflict checks of a batch run. No Tauri imports — unit-tested in projects.test.ts.
-import { isScopeEmpty, pathsOverlap } from "@/lib/scope";
+import { cloneScope, isScopeEmpty, pathsOverlap } from "@/lib/scope";
 import type { ProjectInfo, SyncProject, SyncScope } from "@/lib/types";
 
 export const UNTITLED_PROJECT = "Untitled project";
@@ -9,10 +9,6 @@ function newId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   // Fallback for very old webviews; ids only need to be unique within the stored list.
   return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function cloneScope(scope: SyncScope): SyncScope {
-  return { includeRootFiles: scope.includeRootFiles, folders: [...scope.folders] };
 }
 
 /**

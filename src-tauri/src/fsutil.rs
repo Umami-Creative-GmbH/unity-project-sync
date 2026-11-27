@@ -202,6 +202,9 @@ pub enum Removed {
 pub enum TreeRemove {
     Done,
     Stopped,
+    /// Finished, but entries matching the `keep` predicate were left in place (and with them
+    /// every folder above them).
+    Kept,
 }
 
 /// Removes a link itself (on Windows a directory symlink / junction needs `remove_dir`).
@@ -235,7 +238,7 @@ fn remove_empty_dir(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Combines the outcomes of sibling removals: the first error wins, then `Stopped`.
+/// Combines the outcomes of sibling removals: the first error wins, then `Stopped`, then `Kept`.
 ///
 /// `Err` intentionally wins over `Stopped`: after the first error the walk stops by itself (see
 /// [`remove_dir_parallel`]), so its siblings typically report `Stopped`. A caller that needs to
@@ -244,6 +247,7 @@ fn combine(a: io::Result<TreeRemove>, b: io::Result<TreeRemove>) -> io::Result<T
     match (a, b) {
         (Err(e), _) | (_, Err(e)) => Err(e),
         (Ok(TreeRemove::Stopped), _) | (_, Ok(TreeRemove::Stopped)) => Ok(TreeRemove::Stopped),
+        (Ok(TreeRemove::Kept), _) | (_, Ok(TreeRemove::Kept)) => Ok(TreeRemove::Kept),
         _ => Ok(TreeRemove::Done),
     }
 }
@@ -260,9 +264,23 @@ fn is_not_found(e: &io::Error) -> bool {
 ///
 /// The first error also stops the walk (the other workers start no new entry) and is returned
 /// even when siblings report `Stopped`; whatever is left of the tree stays in place.
+#[cfg(test)]
 pub fn remove_dir_parallel(
     path: &Path,
     stop: &(dyn Fn() -> bool + Sync),
+    on_removed: &(dyn Fn(&Path, Removed) + Sync),
+) -> io::Result<TreeRemove> {
+    remove_dir_parallel_keeping(path, stop, &|_| false, on_removed)
+}
+
+/// [`remove_dir_parallel`] that leaves every entry below `path` whose name matches `keep` in
+/// place (not descended into), together with the folders above it: returns `Kept` then. The root
+/// itself is never matched. Names that are not valid UTF-8 never match `keep` and are deleted (the
+/// scan skips such entries, so this only concerns files created after it).
+pub fn remove_dir_parallel_keeping(
+    path: &Path,
+    stop: &(dyn Fn() -> bool + Sync),
+    keep: &(dyn Fn(&str) -> bool + Sync),
     on_removed: &(dyn Fn(&Path, Removed) + Sync),
 ) -> io::Result<TreeRemove> {
     if stop() {
@@ -277,6 +295,7 @@ pub fn remove_dir_parallel(
     let walk = Walk {
         stop: &|| stop() || failed.load(Ordering::Relaxed),
         failed: &failed,
+        keep,
         on_removed,
     };
     remove_entry(path, ft, &walk)
@@ -287,6 +306,8 @@ struct Walk<'a> {
     /// The caller's stop predicate, or an earlier error anywhere in the tree.
     stop: &'a (dyn Fn() -> bool + Sync),
     failed: &'a AtomicBool,
+    /// Names of entries (below the root) that are left in place.
+    keep: &'a (dyn Fn(&str) -> bool + Sync),
     on_removed: &'a (dyn Fn(&Path, Removed) + Sync),
 }
 
@@ -330,6 +351,12 @@ fn remove_tree(dir: &Path, walk: &Walk) -> io::Result<TreeRemove> {
             if (walk.stop)() {
                 return Ok(TreeRemove::Stopped);
             }
+            if p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(walk.keep)
+            {
+                return Ok(TreeRemove::Kept);
+            }
             let r = remove_entry(p, *ft, walk);
             if r.is_err() {
                 // Start no new entry anywhere in the tree (the error is returned to the caller).
@@ -340,6 +367,9 @@ fn remove_tree(dir: &Path, walk: &Walk) -> io::Result<TreeRemove> {
         .reduce(|| Ok(TreeRemove::Done), combine)?;
     if r == TreeRemove::Stopped || (walk.stop)() {
         return Ok(TreeRemove::Stopped);
+    }
+    if r == TreeRemove::Kept {
+        return Ok(TreeRemove::Kept); // not empty: the kept entries stay
     }
     remove_empty_dir(dir)?;
     (walk.on_removed)(dir, Removed::Dir);
@@ -551,6 +581,84 @@ mod tests {
         let r = pool.install(|| remove_dir_parallel(&root, &|| false, &|_, _| {}));
         assert_eq!(r.unwrap(), TreeRemove::Done);
         assert!(!root.exists());
+    }
+
+    /// Entries whose name matches `keep` stay in place, are not descended into, and keep every
+    /// folder above them; the root itself is never matched. Err still wins over Kept.
+    #[test]
+    fn kept_entries_survive_tree_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tree");
+        fs::create_dir_all(root.join("a/b/c")).unwrap();
+        fs::write(root.join("a/b/c/late.log"), b"k").unwrap(); // kept file, 3 levels deep
+        fs::create_dir_all(root.join("x/keep.dir/inner")).unwrap();
+        fs::write(root.join("x/keep.dir/inner/z.txt"), b"z").unwrap(); // inside a kept dir
+        fs::write(root.join("a/gone.txt"), b"g").unwrap();
+        fs::write(root.join("x/gone.txt"), b"g").unwrap();
+        let keep = |n: &str| n.ends_with(".log") || n == "keep.dir";
+        let removed = Mutex::new(Vec::new());
+        let r = remove_dir_parallel_keeping(&root, &|| false, &keep, &|p, _| {
+            removed.lock().unwrap().push(p.to_path_buf())
+        })
+        .unwrap();
+        assert_eq!(r, TreeRemove::Kept);
+        assert_eq!(fs::read(root.join("a/b/c/late.log")).unwrap(), b"k");
+        assert!(root.join("x/keep.dir/inner/z.txt").exists()); // not descended into
+        assert!(!root.join("a/gone.txt").exists() && !root.join("x/gone.txt").exists());
+        let removed = removed.into_inner().unwrap();
+        assert!(removed.iter().all(|p| !p.starts_with(root.join("x/keep.dir"))));
+        assert!(!removed.contains(&root) && !removed.contains(&root.join("a/b")));
+
+        // The root is never matched against `keep`.
+        let lone = dir.path().join("root.log");
+        fs::create_dir_all(&lone).unwrap();
+        let r = remove_dir_parallel_keeping(&lone, &|| false, &keep, &|_, _| {}).unwrap();
+        assert_eq!(r, TreeRemove::Done);
+        assert!(!lone.exists());
+
+        // Err wins over Kept (and over Stopped) from sibling subtrees.
+        fs::create_dir_all(root.join("e_locked")).unwrap();
+        let Some(guard) = undeletable(&root.join("e_locked/x.txt")) else {
+            eprintln!("cannot simulate an undeletable file here; skipped");
+            return;
+        };
+        let pool = crate::threads::pool(8, "test").unwrap();
+        let r = pool.install(|| remove_dir_parallel_keeping(&root, &|| false, &keep, &|_, _| {}));
+        assert!(r.is_err(), "{r:?}");
+        assert!(root.join("a/b/c/late.log").exists());
+        drop(guard);
+    }
+
+    /// Names that are not valid UTF-8 never match `keep`: they are deleted.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_are_never_kept() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tree");
+        fs::create_dir_all(&root).unwrap();
+        let odd = root.join(OsStr::from_bytes(b"late\xff.log"));
+        if fs::write(&odd, b"x").is_err() {
+            return; // the filesystem rejects such names
+        }
+        let keep = |n: &str| n.ends_with(".log");
+        let r = remove_dir_parallel_keeping(&root, &|| false, &keep, &|_, _| {}).unwrap();
+        assert_eq!(r, TreeRemove::Done);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn combine_precedence() {
+        use TreeRemove::*;
+        let err = || Err(io::Error::other("x"));
+        assert!(combine(Ok(Kept), err()).is_err());
+        assert!(combine(err(), Ok(Kept)).is_err());
+        assert!(combine(Ok(Stopped), err()).is_err());
+        assert_eq!(combine(Ok(Kept), Ok(Stopped)).unwrap(), Stopped);
+        assert_eq!(combine(Ok(Stopped), Ok(Kept)).unwrap(), Stopped);
+        assert_eq!(combine(Ok(Done), Ok(Kept)).unwrap(), Kept);
+        assert_eq!(combine(Ok(Done), Ok(Done)).unwrap(), Done);
     }
 
     #[test]

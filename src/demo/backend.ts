@@ -6,6 +6,7 @@
 //   upsDemo.pause() / upsDemo.resume()   freeze or continue a running scan/sync
 //   upsDemo.pauseAt("Forest Demo", 0.6)  pause once that project's sync reaches 60 %
 //   upsDemo.speed = 4                    run the simulation 4x faster (or open with ?speed=4)
+//   upsDemo.failNextSync(3)              the next sync ends with 3 errors (shows "Retry")
 // Open with ?shots to hide scrollbars.
 import { DEMO_PROJECTS, UNITY_ROOT_DIRS, findDemoProject, planEntries, rng, type DemoProject } from "@/demo/data";
 import type {
@@ -19,7 +20,8 @@ import type {
   SyncScope,
   ThreadInfo,
 } from "@/lib/types";
-import { DEFAULT_SCOPE } from "@/lib/types";
+import { DEFAULT_SCOPE, MAX_EXCLUDE_PATTERNS } from "@/lib/types";
+import { excludePatternError, isExcludedName, sanitizeExclude } from "@/lib/scope";
 
 type Handler = (event: { event: string; id: number; payload: unknown }) => void;
 
@@ -47,6 +49,11 @@ const controls = {
   paused: false,
   speed: Number(new URLSearchParams(window.location.search).get("speed")) || 1,
   pauseRule: null as { name: string; fraction: number } | null,
+  /** Errors the next sync reports (once), to show the report's "Retry". */
+  nextSyncErrors: 0,
+  failNextSync(errors = 3) {
+    controls.nextSyncErrors = errors;
+  },
   pause() {
     controls.paused = true;
   },
@@ -103,8 +110,10 @@ const plans = new Map<number, StoredPlan>();
 let nextPlanId = 1;
 
 function inScope(path: string, scope: SyncScope): boolean {
-  const top = path.split("/")[0];
-  return path.includes("/") ? scope.folders.includes(top) : scope.includeRootFiles;
+  const [top, ...rest] = path.split("/");
+  // Like the backend: excluded names (at any depth below the scope folders) are left alone.
+  if (rest.length === 0) return scope.includeRootFiles && !isExcludedName(top, scope.exclude ?? []);
+  return scope.folders.includes(top) && !rest.some((name) => isExcludedName(name, scope.exclude ?? []));
 }
 
 function sum(entries: PlanEntry[], action: PlanEntry["action"]): CountBytes {
@@ -116,6 +125,12 @@ async function scan(source: string, target: string, scope: SyncScope, opId: numb
   const found = findDemoProject(source);
   if (!found || found.side !== "source") throw `The source folder doesn't exist: ${source}`;
   const project = found.project;
+  const badPattern = (scope.exclude ?? []).find((p) => p.trim() && excludePatternError(p));
+  if (badPattern) throw `Invalid exclusion pattern "${badPattern.trim()}": ${excludePatternError(badPattern)}`;
+  // Like the backend: too many patterns (trimmed, deduped ignoring case) are rejected, not truncated.
+  const unique = new Set((scope.exclude ?? []).map((p) => p.trim().toLowerCase()).filter(Boolean));
+  if (unique.size > MAX_EXCLUDE_PATTERNS) throw `Too many exclusion patterns (at most ${MAX_EXCLUDE_PATTERNS}).`;
+  scope = { ...scope, exclude: sanitizeExclude(scope.exclude ?? []) };
   const entries = planEntries(project).filter((e) => inScope(e.path, scope));
   const total = project.unchanged.files + entries.length;
   let scanMs = 0;
@@ -176,6 +191,12 @@ async function runSync(planId: number, opId: number): Promise<SyncReport> {
   const totalFiles = files.length;
   const totalBytes = summary.totalBytes;
   const threads = Math.max(1, Math.min(THREADS.autoThreads, totalFiles));
+  const errorCount = controls.nextSyncErrors;
+  controls.nextSyncErrors = 0;
+  const syncErrors = files.slice(0, errorCount).map((f) => ({
+    path: f.path,
+    message: "The process cannot access the file because it is being used by another process. (os error 32)",
+  }));
 
   let elapsedMs = 0;
   let doneBytes = 0;
@@ -217,8 +238,8 @@ async function runSync(planId: number, opId: number): Promise<SyncReport> {
       bytesWritten: doneBytes - Math.round(summary.verify.bytes * 0.75 * (doneBytes / Math.max(1, totalBytes))),
       durationMs: Math.round(elapsedMs),
       cancelled: wasCancelled,
-      errors: [],
-      errorCount: 0,
+      errors: syncErrors,
+      errorCount: syncErrors.length,
       threads,
     };
   };

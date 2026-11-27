@@ -4,11 +4,12 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { IconAlertTriangle, IconBolt, IconLoader2, IconPlus, IconSearch, IconX } from "@tabler/icons-react";
 import { toast } from "sonner";
 
+import { ActionFooter, ActionFooterStatus } from "@/components/action-footer";
 import { AppHeader } from "@/components/app-header";
-import { BatchPreview } from "@/components/batch-preview";
-import { BatchReport } from "@/components/batch-report";
-import { BatchScanProgress } from "@/components/batch-scan-progress";
-import { BatchSyncProgress } from "@/components/batch-sync-progress";
+import { BatchPreview, BatchPreviewFooter } from "@/components/batch-preview";
+import { BatchReport, BatchReportFooter } from "@/components/batch-report";
+import { BatchScanFooter, BatchScanProgress } from "@/components/batch-scan-progress";
+import { BatchSyncFooter, BatchSyncProgress } from "@/components/batch-sync-progress";
 import { InlineNotice } from "@/components/folder-card";
 import { ProjectEditor } from "@/components/project-editor";
 import { ProjectList } from "@/components/project-list";
@@ -28,6 +29,7 @@ import {
   includedItems,
   lastRunFor,
   overallProgress,
+  retryableIds,
   shutdownBlocker,
   summarizeBatch,
   type BatchState,
@@ -141,6 +143,11 @@ function App() {
   }, []);
 
   // ---- batch runner ---------------------------------------------------------------------------
+  /**
+   * The finished toast's "Retry": a new batch of the same mode (preview or "Sync now") of the
+   * projects that still exist (set below).
+   */
+  const retryRef = useRef<(ids: string[], autoSync: boolean) => void>(() => {});
   /** Explains a skipped shutdown (only when "Shutdown after" is on). */
   const notifyShutdownSkipped = useCallback((reason: string) => {
     if (!shutdownAfterRef.current) return;
@@ -162,6 +169,11 @@ function App() {
       const s = summarizeBatch(state);
       const single = state.items.length === 1;
       const details = `${plural(s.filesWritten, "file")} written, ${plural(s.deleted, "item")} deleted in ${formatDuration(s.durationMs)}.`;
+      // Same projects as the report's "Retry" button; still works after the report was closed.
+      const retryIds = retryableIds(state);
+      const autoSync = state.autoSync;
+      const action =
+        retryIds.length > 0 ? { label: "Retry", onClick: () => retryRef.current(retryIds, autoSync) } : undefined;
       if (s.outcome === "success") {
         if (s.synced === 0) toast.success("Already in sync", { description: "Nothing needed to change." });
         else toast.success(single ? "Sync complete" : `${plural(s.synced + s.inSync, "project")} in sync`, { description: details });
@@ -172,13 +184,14 @@ function App() {
       } else if (s.outcome === "partial") {
         toast.warning(s.errorCount > 0 ? `Sync finished with ${plural(s.errorCount, "error")}` : "Sync finished with problems", {
           description: s.failed > 0 ? `${plural(s.failed, "project")} failed. See the report.` : "See the report for details.",
+          action,
         });
       } else if (s.outcome === "cancelled") {
         toast.info("Sync cancelled", { description: "Some targets are only partially synced." });
       } else if (s.failed === 0 && s.skipped > 0) {
         toast.error("Nothing was synced", { description: `${plural(s.skipped, "project")} skipped. See the report.` });
       } else {
-        toast.error("Sync failed", { description: "See the report for details." });
+        toast.error("Sync failed", { description: "See the report for details.", action });
       }
 
       if (!shutdownAfterRef.current) return;
@@ -236,7 +249,23 @@ function App() {
   });
   const batch = runner.state;
   const busy = runner.busy;
+  retryRef.current = (ids, autoSync) => {
+    // The toast can outlive its run: never start over (or silently drop) a scan or sync in progress.
+    if (busy) {
+      toast.info("A run is already in progress", { description: "Finish or cancel it, then retry from the report." });
+      return;
+    }
+    // Only from a resting state: in the preview this would discard the scanned plans (and include choices).
+    if (batch.phase !== "idle" && batch.phase !== "error" && batch.phase !== "report") {
+      toast.info("Close the preview first to retry");
+      return;
+    }
+    const existing = ids.filter((id) => projectsRef.current.some((p) => p.id === id));
+    if (existing.length > 0) runner.start(existing, autoSync);
+  };
   const onHome = batch.phase === "idle" || batch.phase === "error";
+  // Every view with a fixed footer (they all share its id) gets the skip link to it.
+  const hasActionFooter = onHome ? loaded && projects.length > 0 : batch.phase !== "idle";
 
   // ---- updates --------------------------------------------------------------------------------
   // Installing exits the app (the installer restarts it), which would kill a running scan or sync.
@@ -450,6 +479,12 @@ function App() {
     runner.start(ids, autoSync);
   };
 
+  /** Preview "Back" / report "Done": back to the list, with fresh folder infos. */
+  const closeBatch = () => {
+    runner.close();
+    setRefreshKey((k) => k + 1);
+  };
+
   // ---- shutdown -------------------------------------------------------------------------------
   const shutdownNow = useCallback(async () => {
     setShutdownOpen(false);
@@ -491,6 +526,14 @@ function App() {
       </div>
       <main ref={mainRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="mx-auto flex max-w-4xl flex-col gap-4 px-4 py-5 sm:px-6">
+          {hasActionFooter && (
+            <a
+              href="#batch-actions"
+              className="sr-only rounded-md bg-background px-2 py-1 text-sm focus:not-sr-only focus:self-start focus:ring-2 focus:ring-ring/50"
+            >
+              Skip to the actions
+            </a>
+          )}
           {onHome && (
             <>
               {batch.phase === "error" && (
@@ -512,14 +555,6 @@ function App() {
                 </div>
               ) : (
                 <>
-                  {projects.length > 0 && (
-                    <a
-                      href="#batch-actions"
-                      className="sr-only rounded-md bg-background px-2 py-1 text-sm focus:not-sr-only focus:self-start focus:ring-2 focus:ring-ring/50"
-                    >
-                      Skip to the batch actions
-                    </a>
-                  )}
                   <ProjectList
                   projects={projects}
                   infos={infos}
@@ -540,123 +575,126 @@ function App() {
             </>
           )}
 
-          {(batch.phase === "preflight" || batch.phase === "scanning") && (
-            <BatchScanProgress
-              state={batch}
-              onCancel={runner.cancel}
-              shutdownAfter={shutdownAfter}
-              onShutdownAfterChange={setShutdownAfter}
-            />
-          )}
+          {(batch.phase === "preflight" || batch.phase === "scanning") && <BatchScanProgress state={batch} />}
 
-          {batch.phase === "preview" && (
-            <BatchPreview
-              state={batch}
-              onSetInclude={runner.setInclude}
-              onBack={() => {
-                runner.close();
-                setRefreshKey((k) => k + 1);
-              }}
-              onRescan={runner.rescan}
-              onStart={runner.startSync}
-              shutdownAfter={shutdownAfter}
-              onShutdownAfterChange={setShutdownAfter}
-            />
-          )}
+          {batch.phase === "preview" && <BatchPreview state={batch} onSetInclude={runner.setInclude} />}
 
-          {batch.phase === "syncing" && (
-            <BatchSyncProgress
-              state={batch}
-              onCancel={runner.cancel}
-              shutdownAfter={shutdownAfter}
-              onShutdownAfterChange={setShutdownAfter}
-            />
-          )}
+          {batch.phase === "syncing" && <BatchSyncProgress state={batch} />}
 
-          {batch.phase === "report" && (
-            <BatchReport
-              state={batch}
-              onRescan={runner.rescan}
-              onDone={() => {
-                runner.close();
-                setRefreshKey((k) => k + 1);
-              }}
-            />
-          )}
+          {batch.phase === "report" && <BatchReport state={batch} />}
         </div>
       </main>
 
+      {/* Each view's primary actions sit in a fixed footer below the scrolling content. */}
+      {(batch.phase === "preflight" || batch.phase === "scanning") && (
+        <BatchScanFooter
+          state={batch}
+          onCancel={runner.cancel}
+          shutdownAfter={shutdownAfter}
+          onShutdownAfterChange={setShutdownAfter}
+        />
+      )}
+
+      {batch.phase === "preview" && (
+        <BatchPreviewFooter
+          state={batch}
+          onBack={closeBatch}
+          onRescan={runner.rescan}
+          onStart={runner.startSync}
+          shutdownAfter={shutdownAfter}
+          onShutdownAfterChange={setShutdownAfter}
+        />
+      )}
+
+      {batch.phase === "syncing" && (
+        <BatchSyncFooter
+          state={batch}
+          onCancel={runner.cancel}
+          shutdownAfter={shutdownAfter}
+          onShutdownAfterChange={setShutdownAfter}
+        />
+      )}
+
+      {batch.phase === "report" && (
+        <BatchReportFooter
+          state={batch}
+          onRescan={runner.rescan}
+          onRetry={runner.retry}
+          onDone={closeBatch}
+          shutdownAfter={shutdownAfter}
+          onShutdownAfterChange={setShutdownAfter}
+        />
+      )}
+
       {onHome && loaded && projects.length > 0 && (
-        <footer id="batch-actions" tabIndex={-1} className="shrink-0 border-t bg-background outline-none">
-          <div className="mx-auto flex max-w-4xl items-center gap-2 px-4 py-3 sm:px-6">
-            <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={setShutdownAfter} />
-            {shutdownAfter && attentionCount > 0 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    className="flex shrink-0 text-amber-600 dark:text-amber-400"
-                    tabIndex={0}
-                    aria-label={`Shutdown will be skipped: ${plural(attentionCount, "project")} need${attentionCount === 1 ? "s" : ""} attention`}
-                  >
-                    <IconAlertTriangle className="size-4" />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-64">
-                  Shutdown will be skipped: {plural(attentionCount, "project")} need{attentionCount === 1 ? "s" : ""}{" "}
-                  attention and will be skipped.
-                </TooltipContent>
-              </Tooltip>
+        <ActionFooter id="batch-actions" label="Batch actions">
+          <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={setShutdownAfter} />
+          {shutdownAfter && attentionCount > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="flex shrink-0 text-amber-600 dark:text-amber-400"
+                  tabIndex={0}
+                  aria-label={`Shutdown will be skipped: ${plural(attentionCount, "project")} need${attentionCount === 1 ? "s" : ""} attention`}
+                >
+                  <IconAlertTriangle className="size-4" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-64">
+                Shutdown will be skipped: {plural(attentionCount, "project")} need{attentionCount === 1 ? "s" : ""}{" "}
+                attention and will be skipped.
+              </TooltipContent>
+            </Tooltip>
+          )}
+          <ActionFooterStatus>
+            {selectedIds.length > 0
+              ? `${selectedIds.length} of ${plural(projects.length, "project")} selected`
+              : projects.length === 1
+                ? "1 project"
+                : `All ${projects.length} projects`}
+            {attentionCount > 0 && (
+              <span className="text-amber-600 dark:text-amber-400">
+                {" "}
+                · {attentionCount} need{attentionCount === 1 ? "s" : ""} attention and will be skipped
+              </span>
             )}
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-              {selectedIds.length > 0
-                ? `${selectedIds.length} of ${plural(projects.length, "project")} selected`
-                : projects.length === 1
-                  ? "1 project"
-                  : `All ${projects.length} projects`}
-              {attentionCount > 0 && (
-                <span className="text-amber-600 dark:text-amber-400">
-                  {" "}
-                  · {attentionCount} need{attentionCount === 1 ? "s" : ""} attention and will be skipped
-                </span>
-              )}
-            </span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span tabIndex={-1}>
-                  <Button
-                    variant="outline"
-                    size="lg"
-                    disabled={busy || runnableCount === 0}
-                    onClick={() => startBatch(targetIds, true)}
-                  >
-                    <IconBolt data-icon="inline-start" />
-                    {scopeLabel === "selected" ? `Sync selected now (${countLabel})` : `Sync all now (${countLabel})`}
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {runnableCount === 0
-                  ? "Fix the projects that need attention first"
-                  : `Scan and sync ${plural(runnableCount, "project")} right away — skips the preview${skippedNote}`}
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span tabIndex={-1}>
-                  <Button size="lg" disabled={busy || runnableCount === 0} onClick={() => startBatch(targetIds, false)}>
-                    <IconSearch data-icon="inline-start" />
-                    {scopeLabel === "selected" ? `Scan selected (${countLabel})` : `Scan all (${countLabel})`}
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {runnableCount === 0
-                  ? "Fix the projects that need attention first"
-                  : `Scan ${plural(runnableCount, "project")}, then review one combined preview before syncing${skippedNote}`}
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </footer>
+          </ActionFooterStatus>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={-1}>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  disabled={busy || runnableCount === 0}
+                  onClick={() => startBatch(targetIds, true)}
+                >
+                  <IconBolt data-icon="inline-start" />
+                  {scopeLabel === "selected" ? `Sync selected now (${countLabel})` : `Sync all now (${countLabel})`}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {runnableCount === 0
+                ? "Fix the projects that need attention first"
+                : `Scan and sync ${plural(runnableCount, "project")} right away — skips the preview${skippedNote}`}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={-1}>
+                <Button size="lg" disabled={busy || runnableCount === 0} onClick={() => startBatch(targetIds, false)}>
+                  <IconSearch data-icon="inline-start" />
+                  {scopeLabel === "selected" ? `Scan selected (${countLabel})` : `Scan all (${countLabel})`}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {runnableCount === 0
+                ? "Fix the projects that need attention first"
+                : `Scan ${plural(runnableCount, "project")}, then review one combined preview before syncing${skippedNote}`}
+            </TooltipContent>
+          </Tooltip>
+        </ActionFooter>
       )}
 
       {editing && (

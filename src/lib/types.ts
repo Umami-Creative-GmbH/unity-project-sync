@@ -27,6 +27,13 @@ export interface SyncScope {
   includeRootFiles: boolean;
   /** Top-level folder names, e.g. ["Assets", "Packages", "ProjectSettings"]. */
   folders: string[];
+  /**
+   * Name patterns ignored on both sides (never copied, never deleted), e.g. ["*.log"]:
+   * case-insensitive globs (`*`, `?`) matched against the name of any file or folder inside the
+   * scope (not the scope folders themselves); a match also excludes its Unity `<name>.meta`.
+   * No path separators. Missing in settings saved before exclusions existed (see sanitizeScope).
+   */
+  exclude: string[];
 }
 
 /**
@@ -173,7 +180,12 @@ export type OperationId = number;
 export const DEFAULT_SCOPE: SyncScope = {
   includeRootFiles: true,
   folders: ["Assets", "Packages", "ProjectSettings"],
+  exclude: [],
 };
+
+/** Limits of `SyncScope.exclude` (the backend rejects more; see src-tauri/src/exclude.rs). */
+export const MAX_EXCLUDE_PATTERNS = 100;
+export const MAX_EXCLUDE_PATTERN_LENGTH = 255;
 
 /**
  * Top-level folders that Unity/IDEs/VCS regenerate or own. The UI never offers them and the

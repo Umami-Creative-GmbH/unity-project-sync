@@ -1,6 +1,9 @@
 import { useRef, useState } from "react";
+import { IconLoader2, IconX } from "@tabler/icons-react";
 
+import { ActionFooter, ActionFooterStatus } from "@/components/action-footer";
 import { BatchStatusList } from "@/components/batch-status-list";
+import { ShutdownSwitch } from "@/components/shutdown-switch";
 import { TransferCard } from "@/components/transfer-card";
 import {
   AlertDialog,
@@ -12,24 +15,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { overallProgress, type BatchItem, type BatchState } from "@/lib/batch";
 import { formatBytes, formatCount, formatPercent, plural, progressFraction } from "@/lib/format";
 import { reportErrorCount } from "@/lib/report";
 
-interface BatchSyncProgressProps {
-  state: BatchState;
-  onCancel: () => void;
-  shutdownAfter: boolean;
-  onShutdownAfterChange: (v: boolean) => void;
-}
-
 /**
  * The sync phase: one transfer card for the whole run (a single project is a batch of one), plus the
- * current project and the project list when several projects run.
+ * current project and the project list when several projects run. Its actions: BatchSyncFooter.
  */
-export function BatchSyncProgress({ state, onCancel, shutdownAfter, onShutdownAfterChange }: BatchSyncProgressProps) {
-  const [confirmCancel, setConfirmCancel] = useState(false);
+export function BatchSyncProgress({ state }: { state: BatchState }) {
   const runItems = state.items.filter((it) => it.run !== "none");
   const multi = runItems.length > 1;
   const current =
@@ -41,7 +37,6 @@ export function BatchSyncProgress({ state, onCancel, shutdownAfter, onShutdownAf
   if (maxRef.current.run !== state.syncStartedAt) maxRef.current = { run: state.syncStartedAt, fraction: 0 };
   maxRef.current.fraction = Math.max(maxRef.current.fraction, overall.fraction, state.speedHistory.x);
   const fraction = maxRef.current.fraction;
-  const remaining = runItems.filter((it) => it.run === "pending").length;
   const errors =
     runItems.reduce((n, it) => n + (it.report ? reportErrorCount(it.report) : 0), 0) +
     (running?.syncProgress?.errors ?? 0);
@@ -65,16 +60,49 @@ export function BatchSyncProgress({ state, onCancel, shutdownAfter, onShutdownAf
         cancelling={state.cancelling}
         projectName={current?.name ?? null}
         batch={multi ? { position: overall.position, count: overall.count, names: runItems.map((it) => it.name) } : null}
-        onCancel={() => setConfirmCancel(true)}
-        cancelLabel={multi ? "Cancel the batch sync" : "Cancel sync"}
-        shutdownAfter={shutdownAfter}
-        onShutdownAfterChange={onShutdownAfterChange}
-        shutdownSwitchId={multi ? "shutdown-during-batch" : "shutdown-during-sync"}
       />
 
       {multi && current && <CurrentProject item={current} />}
 
       {state.items.length > 1 && <BatchStatusList items={state.items} mode="sync" title="Projects in this batch" />}
+    </div>
+  );
+}
+
+interface BatchSyncFooterProps {
+  state: BatchState;
+  onCancel: () => void;
+  shutdownAfter: boolean;
+  onShutdownAfterChange: (v: boolean) => void;
+}
+
+/** Sync actions for the fixed footer: Cancel (confirmed first) and "Shut down after". */
+export function BatchSyncFooter({ state, onCancel, shutdownAfter, onShutdownAfterChange }: BatchSyncFooterProps) {
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const runItems = state.items.filter((it) => it.run !== "none");
+  const multi = runItems.length > 1;
+  const remaining = runItems.filter((it) => it.run === "pending").length;
+
+  return (
+    <ActionFooter label="Sync actions">
+      <ShutdownSwitch id="shutdown-after" compact checked={shutdownAfter} onCheckedChange={onShutdownAfterChange} />
+      <ActionFooterStatus>
+        {state.cancelling
+          ? "Cancelling…"
+          : multi && remaining > 0
+            ? `${plural(remaining, "more project")} after this one`
+            : null}
+      </ActionFooterStatus>
+      <Button
+        variant="outline"
+        size="lg"
+        onClick={() => setConfirmCancel(true)}
+        disabled={state.cancelling}
+        aria-label={multi ? "Cancel the batch sync" : "Cancel sync"}
+      >
+        {state.cancelling ? <IconLoader2 className="animate-spin" data-icon="inline-start" /> : <IconX data-icon="inline-start" />}
+        Cancel
+      </Button>
 
       <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
         <AlertDialogContent>
@@ -109,7 +137,7 @@ export function BatchSyncProgress({ state, onCancel, shutdownAfter, onShutdownAf
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </ActionFooter>
   );
 }
 

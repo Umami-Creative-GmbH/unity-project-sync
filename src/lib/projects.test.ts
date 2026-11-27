@@ -15,7 +15,7 @@ import {
 } from "@/lib/projects";
 import type { ProjectInfo, SyncScope } from "@/lib/types";
 
-const SCOPE: SyncScope = { includeRootFiles: true, folders: ["Assets", "Packages", "ProjectSettings"] };
+const SCOPE: SyncScope = { includeRootFiles: true, folders: ["Assets", "Packages", "ProjectSettings"], exclude: ["*.log"] };
 
 function info(partial: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
@@ -64,6 +64,7 @@ describe("project creation and naming", () => {
     expect(p.scope).toEqual(SCOPE);
     expect(p.scope).not.toBe(SCOPE);
     expect(p.scope.folders).not.toBe(SCOPE.folders);
+    expect(p.scope.exclude).not.toBe(SCOPE.exclude);
   });
 
   it("generates unique ids", () => {
@@ -116,6 +117,8 @@ describe("project creation and naming", () => {
     const d1 = duplicateProject(p, ["Game"], "d1");
     expect(d1).toMatchObject({ id: "d1", name: "Game (copy)", lastRun: null, source: "C:\\Game", target: null, targetAck: false });
     expect(d1.scope).not.toBe(p.scope);
+    expect(d1.scope).toEqual(p.scope);
+    expect(d1.scope.exclude).not.toBe(p.scope.exclude);
     const d2 = duplicateProject(p, ["Game", "Game (copy)"], "d2");
     expect(d2.name).toBe("Game (copy 2)");
   });
@@ -165,7 +168,7 @@ describe("validateProject", () => {
   });
 
   it("rejects an empty scope", () => {
-    expect(codes({ ...base, scope: { includeRootFiles: false, folders: [] } }, info(), info())).toEqual(["scopeEmpty"]);
+    expect(codes({ ...base, scope: { includeRootFiles: false, folders: [], exclude: ["*.log"] } }, info(), info())).toEqual(["scopeEmpty"]);
   });
 
   it("requires an acknowledgement for a non-empty, non-Unity target", () => {

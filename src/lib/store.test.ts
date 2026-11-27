@@ -29,7 +29,7 @@ import {
 } from "@/lib/store";
 import type { SyncScope } from "@/lib/types";
 
-const DEFAULT: SyncScope = { includeRootFiles: true, folders: ["Assets", "Packages", "ProjectSettings"] };
+const DEFAULT: SyncScope = { includeRootFiles: true, folders: ["Assets", "Packages", "ProjectSettings"], exclude: [] };
 
 class FakeStore implements KeyValueStore {
   data: Map<string, unknown>;
@@ -155,6 +155,25 @@ describe("loadProjectsFrom — stored list", () => {
     expect(projects[2].lastRun).toBeNull();
     // The repaired list is written back right away.
     expect(store.data.get("projects")).toEqual(projects);
+  });
+
+  it("loads scopes saved before exclusions existed, and sanitizes stored patterns", async () => {
+    const store = new FakeStore({
+      projects: [
+        { id: "old", source: "C:\\Old", scope: { includeRootFiles: true, folders: ["Assets"] } },
+        {
+          id: "new",
+          source: "C:\\New",
+          scope: { includeRootFiles: true, folders: ["Assets"], exclude: [" *.log ", "*.LOG", "", "Logs/*.txt", "*.dmp"] },
+        },
+        { id: "bad", source: "C:\\Bad", scope: { includeRootFiles: true, folders: ["Assets"], exclude: [42] } },
+      ],
+    });
+    const [old, fresh, bad] = await loadProjectsFrom(store, DEFAULT);
+    expect(old.scope).toEqual({ includeRootFiles: true, folders: ["Assets"], exclude: [] });
+    expect(fresh.scope.exclude).toEqual(["*.log", "*.dmp"]);
+    // An unusable scope falls back to the default one.
+    expect(bad.scope).toEqual(DEFAULT);
   });
 
   it("does not write when loading a clean list", async () => {

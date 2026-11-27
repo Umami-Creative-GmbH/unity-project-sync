@@ -234,6 +234,7 @@ fn root_files_are_left_alone_when_excluded() {
     let scope = SyncScope {
         include_root_files: false,
         folders: vec!["Assets".into()],
+        exclude: vec![],
     };
     let out = env.scan(&scope);
     assert!(entry(&out, "old.sln").is_none());
@@ -916,6 +917,7 @@ fn validation_errors() {
         let s = SyncScope {
             include_root_files: true,
             folders: vec!["Assets".into(), bad.into()],
+            exclude: vec![],
         };
         let m = err(try_scan(&env.src, &env.tgt, &s));
         assert!(m.contains("never be synced"), "{bad}: {m}");
@@ -936,12 +938,14 @@ fn validation_errors() {
         let s = SyncScope {
             include_root_files: true,
             folders: vec![bad.into()],
+            exclude: vec![],
         };
         err(try_scan(&env.src, &env.tgt, &s));
     }
     let empty = SyncScope {
         include_root_files: false,
         folders: vec![],
+        exclude: vec![],
     };
     let m = err(try_scan(&env.src, &env.tgt, &empty));
     assert!(m.contains("Nothing to sync"), "{m}");
@@ -950,6 +954,7 @@ fn validation_errors() {
     let roots_only = SyncScope {
         include_root_files: true,
         folders: vec![],
+        exclude: vec![],
     };
     assert!(try_scan(&env.src, &env.tgt, &roots_only).is_ok());
     // Target does not have to exist.
@@ -1257,6 +1262,7 @@ fn end_to_end_unity_project_mirror() {
             "ProjectSettings".into(),
             "UserSettings".into(),
         ],
+        exclude: vec![],
     };
     let outside_wide = snapshot(&env.tgt, &|rel, d| !in_scope(&wide, rel, d));
     let out = env.scan(&wide);
@@ -1284,6 +1290,7 @@ fn end_to_end_unity_project_mirror() {
     let no_root = SyncScope {
         include_root_files: false,
         folders: wide.folders.clone(),
+        exclude: vec![],
     };
     let out = env.scan(&no_root);
     assert_eq!(out.summary.total_entries, 0, "{:#?}", out.summary.entries);
@@ -1331,7 +1338,10 @@ fn wire_payloads_match_types_ts() {
             "scanThreads",
         ],
     );
-    expect(&summary["scope"], &["includeRootFiles", "folders"]);
+    expect(
+        &summary["scope"],
+        &["includeRootFiles", "folders", "exclude"],
+    );
     expect(&summary["copy"], &["files", "bytes"]);
     expect(&summary["delete"], &["files", "bytes", "dirs"]);
     expect(
@@ -1813,4 +1823,393 @@ fn parallel_deletion_can_be_cancelled() {
     let report = execute(&out.plan, &AtomicBool::new(false), 8, &|_: SyncProgress| {});
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(names_in(&env.t("Assets")), ["new.txt"]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Exclusion patterns
+// ---------------------------------------------------------------------------------------------
+
+fn excluding(patterns: &[&str]) -> SyncScope {
+    SyncScope {
+        exclude: patterns.iter().map(|p| p.to_string()).collect(),
+        ..SyncScope::default()
+    }
+}
+
+#[test]
+fn excluded_files_are_neither_copied_nor_deleted() {
+    let env = Env::new();
+    write(&env.s("Assets/a.cs"), b"a", T0);
+    write(&env.s("Assets/Editor.log"), b"source log", T0);
+    write(&env.s("Assets/Tools.unitypackage"), b"pkg", T0);
+    write(&env.s("Assets/Tools.unitypackage.meta"), b"guid: pkg", T0);
+    write(&env.s("Assets/Keep.meta"), b"guid: keep", T0);
+    write(&env.s("build.LOG"), b"root log", T0);
+    write(&env.s("readme.md"), b"r", T0);
+    // Target: excluded extras (any case) stay, everything else is mirrored.
+    write(&env.t("Assets/old.Log"), b"target log", T0);
+    write(
+        &env.t("Assets/Editor.log"),
+        b"different target log",
+        T0 - 100,
+    );
+    write(&env.t("Assets/Gone/crash.log"), b"keep me", T0);
+    write(&env.t("Assets/Gone/Deep/x.cs"), b"x", T0);
+    write(&env.t("Assets/Gone/y.cs"), b"y", T0);
+    write(&env.t("Assets/Gone/Empty/z.cs"), b"z", T0);
+    write(
+        &env.t("Assets/Old.unitypackage.meta"),
+        b"orphan sidecar",
+        T0,
+    );
+    write(&env.t("other.log"), b"root target log", T0);
+
+    let scope = excluding(&["*.log", "*.UNITYPACKAGE", "", " *.log "]);
+    let out = env.scan(&scope);
+    assert_eq!(out.summary.scope.exclude, vec!["*.log", "*.UNITYPACKAGE"]);
+    for e in &out.summary.entries {
+        let name = e.path.rsplit('/').next().unwrap().to_lowercase();
+        assert!(
+            !name.ends_with(".log") && !name.contains(".unitypackage"),
+            "excluded entry planned: {e:?}"
+        );
+    }
+    assert_entry(&out, "Assets/a.cs", PlanAction::Copy, PlanReason::New);
+    assert_entry(&out, "Assets/Keep.meta", PlanAction::Copy, PlanReason::New);
+    // Gone holds an excluded file: kept, its other contents are deleted one by one.
+    assert!(entry(&out, "Assets/Gone").is_none());
+    assert_entry(
+        &out,
+        "Assets/Gone/y.cs",
+        PlanAction::Delete,
+        PlanReason::Extra,
+    );
+    assert_entry(
+        &out,
+        "Assets/Gone/Deep",
+        PlanAction::Delete,
+        PlanReason::Extra,
+    );
+    assert_entry(
+        &out,
+        "Assets/Gone/Empty",
+        PlanAction::Delete,
+        PlanReason::Extra,
+    );
+    assert_eq!((out.summary.delete.files, out.summary.delete.dirs), (3, 2));
+    assert!(
+        out.summary.warnings.is_empty(),
+        "{:?}",
+        out.summary.warnings
+    );
+
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!((report.deleted_files, report.deleted_dirs), (3, 2));
+    assert!(!env.t("Assets/Tools.unitypackage").exists());
+    assert!(!env.t("Assets/Tools.unitypackage.meta").exists());
+    assert!(!env.t("build.LOG").exists());
+    assert_eq!(
+        fs::read(env.t("Assets/Editor.log")).unwrap(),
+        b"different target log"
+    );
+    assert_eq!(fs::read(env.t("Assets/old.Log")).unwrap(), b"target log");
+    assert_eq!(
+        fs::read(env.t("Assets/Gone/crash.log")).unwrap(),
+        b"keep me"
+    );
+    assert!(!env.t("Assets/Gone/y.cs").exists() && !env.t("Assets/Gone/Deep").exists());
+    assert!(env.t("Assets/Old.unitypackage.meta").exists());
+    assert!(env.t("other.log").exists());
+    assert!(env.t("Assets/a.cs").exists() && env.t("readme.md").exists());
+    assert_fully_unchanged(&env, &scope);
+
+    // The plan refuses excluded paths, at any depth.
+    let plan = &out.plan;
+    for rel in [
+        "Assets/x.log",
+        "Assets/Sub/X.LOG/inner.cs",
+        "Assets/T.unitypackage.meta",
+        "a.log",
+    ] {
+        assert!(!plan.in_scope(rel), "{rel}");
+    }
+    assert!(plan.in_scope("Assets/log.cs") && plan.in_scope("readme.md"));
+
+    // Without the patterns, the same files are mirrored (and the extras deleted).
+    let out = env.scan(&SyncScope::default());
+    assert_entry(
+        &out,
+        "Assets/Tools.unitypackage",
+        PlanAction::Copy,
+        PlanReason::New,
+    );
+    assert_entry(
+        &out,
+        "Assets/old.Log",
+        PlanAction::Delete,
+        PlanReason::Extra,
+    );
+    assert_entry(&out, "Assets/Gone", PlanAction::Delete, PlanReason::Extra);
+}
+
+#[test]
+fn excluded_folders_are_skipped_with_their_sidecar() {
+    let env = Env::new();
+    write(&env.s("Assets/Generated/a.cs"), b"a", T0);
+    write(&env.s("Assets/Generated/Sub/b.cs"), b"b", T0);
+    write(&env.s("Assets/Generated.meta"), b"guid: gen", T0);
+    write(&env.s("Assets/Code/c.cs"), b"c", T0);
+    // Same name in another letter case: excluded too (patterns ignore case).
+    write(&env.t("Assets/GENERATED/old.cs"), b"old", T0);
+    // A scope folder missing in the source is deleted, except for what is excluded in it.
+    write(&env.t("Packages/generated/keep.txt"), b"k", T0);
+    write(&env.t("Packages/manifest.json"), b"{}", T0);
+
+    let scope = excluding(&["generated"]);
+    let out = env.scan(&scope);
+    assert!(
+        !out.summary
+            .entries
+            .iter()
+            .any(|e| e.path.to_lowercase().contains("generated")),
+        "{:#?}",
+        out.summary.entries
+    );
+    assert_entry(&out, "Assets/Code/c.cs", PlanAction::Copy, PlanReason::New);
+    assert_entry(
+        &out,
+        "Packages/manifest.json",
+        PlanAction::Delete,
+        PlanReason::Extra,
+    );
+    assert!(entry(&out, "Packages").is_none());
+
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(!env.t("Assets/Generated.meta").exists());
+    assert!(!env.t("Assets/GENERATED/a.cs").exists());
+    assert_eq!(fs::read(env.t("Assets/GENERATED/old.cs")).unwrap(), b"old");
+    assert!(env.t("Packages/generated/keep.txt").exists());
+    assert!(!env.t("Packages/manifest.json").exists());
+    assert_fully_unchanged(&env, &scope);
+}
+
+#[test]
+fn a_source_file_never_replaces_a_target_folder_with_excluded_content() {
+    let env = Env::new();
+    write(&env.s("Assets/Foo"), b"now a file", T0);
+    write(&env.t("Assets/Foo/crash.dmp"), b"dump", T0);
+    write(&env.t("Assets/Foo/a.cs"), b"a", T0);
+    let out = env.scan(&excluding(&["*.dmp"]));
+    assert!(out.summary.total_entries == 0, "{:#?}", out.summary.entries);
+    assert!(
+        out.summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("Assets/Foo") && w.contains("excluded")),
+        "{:?}",
+        out.summary.warnings
+    );
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(env.t("Assets/Foo/crash.dmp").exists() && env.t("Assets/Foo/a.cs").exists());
+}
+
+#[test]
+fn excluded_files_appearing_after_the_scan_are_not_deleted() {
+    let env = Env::new();
+    write(&env.s("Assets/a.cs"), b"a", T0);
+    write(&env.t("Assets/Gone/Deep/x.cs"), b"x", T0);
+    write(&env.t("Assets/Gone/y.cs"), b"y", T0);
+    let out = env.scan(&excluding(&["*.log"]));
+    assert_entry(&out, "Assets/Gone", PlanAction::Delete, PlanReason::Extra);
+    write(&env.t("Assets/Gone/Deep/late.log"), b"late", T0);
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        fs::read(env.t("Assets/Gone/Deep/late.log")).unwrap(),
+        b"late"
+    );
+    assert!(!env.t("Assets/Gone/y.cs").exists() && !env.t("Assets/Gone/Deep/x.cs").exists());
+    assert_eq!((report.deleted_files, report.deleted_dirs), (2, 0));
+}
+
+#[test]
+fn exclusion_patterns_are_validated() {
+    let env = Env::new();
+    write(&env.s("Assets/a.cs"), b"a", T0);
+    for bad in ["Logs/*.log", "Assets\\x", "*\t.log"] {
+        let r = try_scan(&env.src, &env.tgt, &excluding(&[bad]));
+        let m = match r {
+            Err(ScanError::Invalid(m)) => m,
+            _ => panic!("{bad:?} accepted"),
+        };
+        assert!(m.contains("exclusion pattern"), "{bad:?}: {m}");
+    }
+    let long = "x".repeat(crate::exclude::MAX_EXCLUDE_PATTERN_LEN + 1);
+    assert!(try_scan(&env.src, &env.tgt, &excluding(&[&long])).is_err());
+    assert!(try_scan(&env.src, &env.tgt, &excluding(&["*.log", "Crash_??.dmp"])).is_ok());
+}
+
+#[test]
+fn excluded_root_directories_are_left_alone() {
+    let env = Env::new();
+    write(&env.s("Assets/a.cs"), b"a", T0);
+    write(&env.s("Logs/a.txt"), b"source log", T0);
+    write(&env.t("logs/b.txt"), b"target log", T0);
+    let scope = SyncScope {
+        include_root_files: true,
+        exclude: vec!["Logs".into()],
+        ..SyncScope::default()
+    };
+    let out = env.scan(&scope);
+    assert!(
+        !out.summary
+            .entries
+            .iter()
+            .any(|e| e.path.to_lowercase().contains("logs")),
+        "{:#?}",
+        out.summary.entries
+    );
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(fs::read(env.t("logs/b.txt")).unwrap(), b"target log");
+    assert!(!env.t("Logs/a.txt").exists());
+    assert_fully_unchanged(&env, &scope);
+}
+
+#[test]
+fn case_renamed_folders_keep_excluded_content() {
+    let env = Env::new();
+    if !temp_is_case_insensitive(&env) {
+        return;
+    }
+    write(&env.s("Assets/Scripts/a.cs"), b"a", T0);
+    write(&env.t("Assets/scripts/a.cs"), b"a", T0);
+    write(&env.t("Assets/scripts/crash.log"), b"keep me", T0);
+    let scope = excluding(&["*.log"]);
+    let out = env.scan(&scope);
+    assert_entry(&out, "Assets/Scripts", PlanAction::Update, PlanReason::Case);
+
+    // The plan refuses rename paths with an excluded component.
+    assert!(!out.plan.in_scope("Assets/Scripts/crash.log"));
+    assert!(!out.plan.in_scope("Assets/X.LOG/a.cs"));
+    assert!(out.plan.in_scope("Assets/Scripts/a.cs"));
+    for r in &out.plan.case_renames {
+        let excluded = |rel: &str| rel.split('/').skip(1).any(|p| out.plan.excludes.matches(p));
+        if excluded(&r.from) || excluded(&r.to) {
+            assert!(!out.plan.in_scope(&r.from) || !out.plan.in_scope(&r.to), "{r:?}");
+        }
+    }
+
+    let report = env.sync(&out);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(names_in(&env.t("Assets")), ["Scripts"]);
+    assert_eq!(
+        fs::read(env.t("Assets/Scripts/crash.log")).unwrap(),
+        b"keep me"
+    );
+    assert_fully_unchanged(&env, &scope);
+}
+
+/// A type-conflict folder that gained an excluded file after the scan stays, with one clear
+/// reason (no misleading "Cannot replace target file").
+#[test]
+fn excluded_files_survive_a_conflict_folder_replacement() {
+    let env = Env::new();
+    write(&env.s("Assets/Foo"), b"now a file", T0);
+    write(&env.t("Assets/Foo/a.cs"), b"a", T0);
+    let out = env.scan(&excluding(&["*.log"]));
+    assert_entry(&out, "Assets/Foo", PlanAction::Update, PlanReason::Type);
+    write(&env.t("Assets/Foo/late.log"), b"late", T0);
+    let report = env.sync(&out);
+    assert_eq!(fs::read(env.t("Assets/Foo/late.log")).unwrap(), b"late");
+    assert!(!env.t("Assets/Foo/a.cs").exists());
+    assert!(!report.errors.is_empty());
+    for e in &report.errors {
+        assert!(e.message.contains("excluded"), "{e:?}");
+        assert!(!e.message.contains("Cannot replace target file"), "{e:?}");
+    }
+}
+
+/// Makes `path` impossible to remove while the guard lives (Windows: an open handle without
+/// delete sharing; Unix: a read-only parent folder). `None` when this cannot be simulated.
+#[cfg(windows)]
+fn undeletable(path: &Path) -> Option<Box<dyn std::any::Any>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .unwrap();
+    Some(Box::new(f))
+}
+
+#[cfg(unix)]
+fn undeletable(path: &Path) -> Option<Box<dyn std::any::Any>> {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+    let parent = path.parent().unwrap().to_path_buf();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+    let guard = Restore(parent.clone());
+    // Root ignores the permission: nothing to simulate.
+    if fs::write(parent.join("probe"), b"p").is_ok() {
+        return None;
+    }
+    Some(Box::new(guard))
+}
+
+/// A folder delete that keeps failing: with patterns it is retried entry by entry (never with
+/// the robust remove_dir_all, which would take excluded entries along) and reported; without
+/// patterns the robust fallback runs as before. Either way the next run finishes the job.
+#[test]
+fn failing_folder_deletes_are_reported_and_excluded_entries_survive() {
+    for patterns in [&["*.log"][..], &[]] {
+        let env = Env::new();
+        write(&env.s("Assets/a.cs"), b"a", T0);
+        write(&env.t("Assets/Old/a.txt"), b"a", T0);
+        write(&env.t("Assets/Old/Sub/b.txt"), b"b", T0);
+        write(&env.t("Assets/Old/Locked/x.txt"), b"x", T0);
+        write(&env.t("Assets/Other/crash.log"), b"keep me", T0);
+        let scope = excluding(patterns);
+        let out = env.scan(&scope);
+        assert_entry(&out, "Assets/Old", PlanAction::Delete, PlanReason::Extra);
+        let Some(guard) = undeletable(&env.t("Assets/Old/Locked/x.txt")) else {
+            eprintln!("cannot simulate an undeletable file here; skipped");
+            return;
+        };
+        let report = env.sync(&out);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.path == "Assets/Old" && e.message.starts_with("Delete failed")),
+            "{patterns:?}: {:?}",
+            report.errors
+        );
+        assert!(env.t("Assets/Old/Locked/x.txt").exists());
+        if !patterns.is_empty() {
+            assert_eq!(
+                fs::read(env.t("Assets/Other/crash.log")).unwrap(),
+                b"keep me"
+            );
+        }
+        drop(guard);
+
+        let out = env.scan(&scope);
+        let report = env.sync(&out);
+        assert!(report.errors.is_empty(), "{patterns:?}: {:?}", report.errors);
+        assert!(!env.t("Assets/Old").exists());
+        assert_eq!(
+            env.t("Assets/Other/crash.log").exists(),
+            !patterns.is_empty()
+        );
+        assert_fully_unchanged(&env, &scope);
+    }
 }

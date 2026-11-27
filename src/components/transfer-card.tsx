@@ -7,13 +7,10 @@ import {
   IconLoader2,
   IconSparkles,
   IconTrash,
-  IconX,
 } from "@tabler/icons-react";
 
-import { ShutdownSwitch } from "@/components/shutdown-switch";
 import { SpeedChart } from "@/components/speed-chart";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes, formatCount, formatDuration, formatEta, formatSpeed, plural } from "@/lib/format";
@@ -45,16 +42,12 @@ export interface TransferCardProps {
   projectName: string | null;
   /** Batch of several projects: position of the running one. */
   batch: { position: number; count: number; names: readonly string[] } | null;
-  onCancel: () => void;
-  cancelLabel: string;
-  shutdownAfter: boolean;
-  onShutdownAfterChange: (v: boolean) => void;
-  shutdownSwitchId: string;
 }
 
 /**
  * KPI card of a running sync, Windows copy-dialog style: the speed chart *is* the progress bar,
- * with the hero percentage above and the key numbers below.
+ * with the hero percentage above and the key numbers below. Cancel and "Shut down after" live in the
+ * app's action footer (always on screen during the run).
  */
 export function TransferCard(props: TransferCardProps) {
   const { fraction, history, progress, cancelling, batch, projectName, errors } = props;
@@ -111,19 +104,6 @@ export function TransferCard(props: TransferCardProps) {
               </Badge>
             )}
           </div>
-        </div>
-        {/* "Shut down after" next to Cancel: always on screen during the run. */}
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          <ShutdownSwitch
-            id={props.shutdownSwitchId}
-            compact
-            checked={props.shutdownAfter}
-            onCheckedChange={props.onShutdownAfterChange}
-          />
-          <Button variant="outline" onClick={props.onCancel} disabled={cancelling} aria-label={props.cancelLabel}>
-            <IconX data-icon="inline-start" />
-            Cancel
-          </Button>
         </div>
       </div>
 

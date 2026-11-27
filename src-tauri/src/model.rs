@@ -41,6 +41,10 @@ pub struct ProjectInfo {
 pub struct SyncScope {
     pub include_root_files: bool,
     pub folders: Vec<String>,
+    /// Name patterns ignored on both sides (see `exclude.rs`). Missing in payloads and settings
+    /// from before exclusions existed.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl Default for SyncScope {
@@ -52,6 +56,7 @@ impl Default for SyncScope {
                 "Packages".to_string(),
                 "ProjectSettings".to_string(),
             ],
+            exclude: Vec::new(),
         }
     }
 }
@@ -245,6 +250,15 @@ mod tests {
         let s: SyncScope =
             serde_json::from_str(r#"{"includeRootFiles":false,"folders":["Assets"]}"#).unwrap();
         assert!(!s.include_root_files);
+        assert!(
+            s.exclude.is_empty(),
+            "older payloads without `exclude` still load"
+        );
+        let s: SyncScope =
+            serde_json::from_str(r#"{"includeRootFiles":true,"folders":[],"exclude":["*.log"]}"#)
+                .unwrap();
+        assert_eq!(s.exclude, vec!["*.log".to_string()]);
+        assert_eq!(serde_json::to_value(&s).unwrap()["exclude"][0], "*.log");
 
         let d = serde_json::to_value(DeleteCounts::default()).unwrap();
         assert!(d.get("dirs").is_some() && d.get("files").is_some() && d.get("bytes").is_some());

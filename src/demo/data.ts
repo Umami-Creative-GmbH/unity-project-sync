@@ -114,6 +114,18 @@ export const DEMO_PROJECTS: DemoProject[] = [
         reason: "extra",
         specs: [{ dirs: ["Assets/Art/Textures/_Old"], stems: ENV, suffixes: ["_Albedo_v1", "_Normal_v1"], ext: ".png", size: [1 * MB, 6 * MB], count: 10 }],
       },
+      {
+        // Clutter the exclusion presets (Logs, Unity packages, Crash dumps, Temp files) filter out.
+        // Last, so the seeded names and sizes of everything above stay the same.
+        action: "copy",
+        reason: "new",
+        specs: [
+          { dirs: ["Assets/ThirdParty"], stems: ["PolyNaturePack", "FogVolumes"], ext: ".unitypackage", size: [40 * MB, 220 * MB], count: 2 },
+          { dirs: ["Assets/Editor/Logs"], stems: ["BakeLighting", "Import"], ext: ".log", size: [20 * KB, 2 * MB], count: 2 },
+          { dirs: ["Assets/Art/Models/Environment"], stems: ["~Rock_LOD0"], ext: ".tmp", size: [400 * KB, 4 * MB], count: 1 },
+          { dirs: ["Assets/Editor"], stems: ["crash"], ext: ".dmp", size: [30 * MB, 90 * MB], count: 1 },
+        ],
+      },
     ],
     deletedDirs: ["Assets/Art/Textures/_Old"],
     unchanged: { files: 5_812, bytes: 9.38 * 1024 * MB },

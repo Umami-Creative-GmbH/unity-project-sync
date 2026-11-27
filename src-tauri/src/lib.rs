@@ -1,5 +1,6 @@
 //! Unity Project Sync backend: Tauri commands, app state and wiring.
 
+mod exclude;
 mod fsutil;
 mod model;
 mod project;
@@ -317,6 +318,7 @@ mod op_tests {
             source: format!("S/{name}").into(),
             target: format!("T/{name}").into(),
             scope: SyncScope::default(),
+            excludes: Default::default(),
             fold: false,
             delete_files: Vec::new(),
             delete_dirs: Vec::new(),
