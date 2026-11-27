@@ -1,6 +1,6 @@
 [package]
 name = "unity-project-sync"
-version = "0.2.0"
+version = "0.3.0"
 description = "Mirror the non-regenerable parts of Unity projects"
 authors = ["Umami Creative GmbH"]
 edition = "2024"

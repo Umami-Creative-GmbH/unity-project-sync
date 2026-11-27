@@ -14,6 +14,14 @@ The page follows the visitor's light/dark system setting. A toggle in the header
 
 The page shows app screenshots (a large one under the download button, a gallery below the features) that follow the visitor's light/dark preference and open full size in a small lightbox. They live in `static/screenshots/` and are made with the app's demo mode (see "Screenshots & demo mode" in the [root README](../README.md#screenshots--demo-mode)).
 
+Link previews and icons: the page sets Open Graph and Twitter card tags pointing at `static/og-image.png` (1200×630, absolute URL built like the download URLs, so set `PUBLIC_URL` in production), plus `favicon.ico` (16/32/48), an `apple-touch-icon.png` (180×180) and a web app manifest (`site.webmanifest`) with 192/512 and maskable icons. All of them are rendered from `static/app-icon.svg` and `seo/og-image.html` (font, icon and the dark transfer screenshot) with headless Chrome or Edge. After changing the icon, the card's text or the screenshot, run from this folder:
+
+```powershell
+node seo/render.mjs   # set $env:CHROME if Chrome/Edge isn't found
+```
+
+Keep `OG_IMAGE_ALT` in `src/page.rs` in line with the card's text.
+
 The header has GitHub-style **Star** and **Fork** buttons for the repository, with counts. The server itself fetches the counts from the GitHub API (`api.github.com/repos/<owner>/<name>`, unauthenticated, every 30 minutes, every 5 minutes after a failure) and keeps them in memory. Visitors' browsers never contact GitHub. Until the first fetch succeeds, the buttons are shown without counts. On narrow screens only Star is shown; the footer always links the source code.
 
 ## Release folder format
@@ -71,7 +79,7 @@ The **latest** release is the valid one with the highest semver. A pre-release s
 | `GET /download` | `302` to the latest release file, or a `404` HTML page. |
 | `GET /releases/{version}/{file}` | Streams the file (supports HEAD and Range). See the rules below. |
 | `GET /healthz` | `200 ok` |
-| `GET /assets/…`, `/favicon.ico` | Embedded icon, font, CSS, JS and screenshots (`shot-<screen>-<light\|dark>.png`). |
+| `GET /assets/…`, `/favicon.ico`, `/apple-touch-icon.png` | Embedded icons, social card (`og-image.png`), manifest, font, CSS, JS and screenshots (`shot-<screen>-<light\|dark>.png`). The two root paths are for clients that request them without reading the page (`/apple-touch-icon-precomposed.png` too). |
 | anything else | `404` HTML page. |
 
 Rules for `GET /releases/{version}/{file}`:

@@ -1,7 +1,7 @@
 {
   "name": "unity-project-sync",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mirror the non-regenerable parts of Unity projects",
   "author": "Umami Creative GmbH",
   "type": "module",

@@ -1,0 +1,158 @@
+<!doctype html>
+<!-- Source of static/og-image.png (1200x630), the social preview card. Render with
+     `node seo/render.mjs` from update-server/. Uses the site's own font, icon and screenshot. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OG image</title>
+<style>
+  @font-face {
+    font-family: "Geist";
+    font-weight: 100 900;
+    src: url("../static/geist-latin-wght-normal.woff2") format("woff2");
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+  }
+
+  body {
+    position: relative;
+    isolation: isolate;
+    background: oklch(0.145 0 0);
+    color: oklch(0.985 0 0);
+    font-family: "Geist", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The hero's grid and emerald glow (site.css .hero::before/::after, dark theme). */
+  body::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    background-image:
+      linear-gradient(oklch(1 0 0 / 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(1 0 0 / 0.05) 1px, transparent 1px);
+    background-size: 40px 40px;
+    background-position: -1px -1px;
+    mask-image: radial-gradient(ellipse 80% 90% at 30% 20%, #000 20%, transparent 80%);
+  }
+
+  body::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    left: 560px;
+    top: 40px;
+    width: 760px;
+    height: 620px;
+    background: radial-gradient(closest-side, oklch(0.696 0.17 162.48 / 0.22), transparent);
+  }
+
+  .copy {
+    position: absolute;
+    left: 72px;
+    top: 72px;
+    width: 530px;
+    height: 486px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .icon {
+    width: 104px;
+    height: 104px;
+    margin: -8px 0 0 -8px;
+    filter: drop-shadow(0 14px 32px oklch(0 0 0 / 0.6));
+  }
+
+  h1 {
+    margin: 28px 0 0;
+    font-size: 68px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.045em;
+  }
+
+  .tagline {
+    margin: 22px 0 0;
+    color: oklch(0.8 0 0);
+    font-size: 27px;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: auto 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .pills li {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 15px;
+    white-space: nowrap;
+    border: 1px solid oklch(1 0 0 / 0.14);
+    border-radius: 999px;
+    background: oklch(0.205 0 0 / 0.8);
+    color: oklch(0.92 0 0);
+    font-size: 18px;
+    font-weight: 500;
+  }
+
+  .pills svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .pills .accent {
+    border-color: oklch(0.696 0.17 162.48 / 0.45);
+    background: oklch(0.696 0.17 162.48 / 0.14);
+    color: oklch(0.86 0.13 163);
+  }
+
+  .shot {
+    position: absolute;
+    left: 628px;
+    top: 84px;
+    width: 720px;
+    border: 1px solid oklch(1 0 0 / 0.14);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 32px 80px -16px oklch(0 0 0 / 0.85), 0 12px 28px -10px oklch(0 0 0 / 0.6);
+  }
+
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+</style>
+</head>
+<body>
+<div class="copy">
+  <img class="icon" src="../static/app-icon.svg" alt="">
+  <h1>Unity Project Sync</h1>
+  <p class="tagline">Mirror the parts of your Unity projects you can’t rebuild. Skip the Library.</p>
+  <ul class="pills">
+    <li class="accent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 20l-12 -1.5c-1 -.1 -1.8 -.9 -1.8 -1.9v-9.2c0 -1 .8 -1.8 1.8 -1.9l12 -1.5c1.2 -.1 2.2 .8 2.2 1.9v12.1c0 1.2 -1.1 2.1 -2.2 1.9z"/><path d="M12 5l0 14"/><path d="M4 12l16 0"/></svg>Free for Windows</li>
+    <li>MIT licensed</li>
+    <li>No telemetry</li>
+  </ul>
+</div>
+<div class="shot"><img src="../static/screenshots/transfer-dark.png" alt=""></div>
+</body>
+</html>

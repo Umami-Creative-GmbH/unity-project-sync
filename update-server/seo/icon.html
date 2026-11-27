@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Rasterises an SVG at an exact size: icon.html?size=<px>&src=<data: URL of the SVG>.
+     render.mjs loads it with --dump-dom and reads the PNG (and the opaque bounding box, to check
+     the result) from <pre id="out">. A canvas avoids the headless window's minimum size. -->
+<html>
+<head>
+<meta charset="utf-8">
+</head>
+<body>
+<pre id="out"></pre>
+<script>
+  (async () => {
+    const q = new URLSearchParams(location.search);
+    const size = Number(q.get("size"));
+    const img = new Image();
+    img.src = q.get("src");
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, size, size);
+
+    // Bounding box of pixels with alpha > 127, and whether every pixel is fully opaque.
+    const { data } = ctx.getImageData(0, 0, size, size);
+    let [left, top, right, bottom, opaque] = [size, size, -1, -1, true];
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const a = data[(y * size + x) * 4 + 3];
+        if (a < 255) opaque = false;
+        if (a > 127) {
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+      }
+    }
+    document.getElementById("out").textContent = JSON.stringify({
+      png: canvas.toDataURL("image/png"),
+      margins: [left, top, size - 1 - right, size - 1 - bottom],
+      opaque,
+    });
+  })();
+</script>
+</body>
+</html>

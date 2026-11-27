@@ -18,6 +18,10 @@ const APP_NAME: &str = "Unity Project Sync";
 const TAGLINE: &str = "Mirror the non-regenerable parts of Unity projects";
 const DESCRIPTION: &str = "A small Windows app that mirrors Assets, Packages and \
     ProjectSettings of a Unity project from a source to a target folder. Free download.";
+/// Describes static/og-image.png (made from seo/og-image.html); keep the two in sync.
+const OG_IMAGE_ALT: &str = "Unity Project Sync: mirror the parts of your Unity projects you \
+    can't rebuild. Free for Windows, MIT licensed, no telemetry. Next to it, the app copying a \
+    batch of projects with a live speed chart.";
 
 pub struct PageCtx<'a> {
     /// Absolute base URL (no trailing slash), used for canonical/Open Graph URLs.
@@ -319,13 +323,27 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" data-scheme="light">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0a" data-scheme="dark">
 <script src="{theme_js}"></script>
+<link rel="icon" href="{favicon}" sizes="16x16 32x32 48x48">
 <link rel="icon" href="{icon}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{touch_icon}">
+<link rel="manifest" href="{manifest}">
 <link rel="canonical" href="{base}/">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
 <meta property="og:site_name" content="{app}">
 <meta property="og:title" content="{title}">
 <meta property="og:description" content="{desc}">
 <meta property="og:url" content="{base}/">
+<meta property="og:image" content="{base}{og_image}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{og_alt}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{title}">
+<meta name="twitter:description" content="{desc}">
+<meta name="twitter:image" content="{base}{og_image}">
+<meta name="twitter:image:alt" content="{og_alt}">
 <link rel="preload" href="/assets/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="{css}">
 <script src="{js}" defer></script>
@@ -340,6 +358,11 @@ fn layout(ctx: &PageCtx, title: &str, header_cta: bool, main: &str) -> String {
         title = esc(title),
         desc = esc(DESCRIPTION),
         icon = esc(&icon_url),
+        favicon = esc(&assets::url("favicon.ico")),
+        touch_icon = esc(&assets::url("apple-touch-icon.png")),
+        manifest = esc(&assets::url("site.webmanifest")),
+        og_image = esc(&assets::url("og-image.png")),
+        og_alt = esc(OG_IMAGE_ALT),
         app = APP_NAME,
         css = esc(&assets::url("site.css")),
         js = esc(&assets::url("site.js")),

@@ -53,6 +53,43 @@ pub const ASSETS: &[Asset] = &[
         content_type: "image/svg+xml",
         bytes: include_bytes!("../static/app-icon.svg"),
     },
+    // Social card and icons, rendered from app-icon.svg and seo/og-image.html by
+    // `node seo/render.mjs` (see README.md).
+    Asset {
+        name: "og-image.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../static/og-image.png"),
+    },
+    Asset {
+        name: "apple-touch-icon.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../static/apple-touch-icon.png"),
+    },
+    Asset {
+        name: "icon-192.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../static/icon-192.png"),
+    },
+    Asset {
+        name: "icon-512.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../static/icon-512.png"),
+    },
+    Asset {
+        name: "icon-maskable-512.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../static/icon-maskable-512.png"),
+    },
+    Asset {
+        name: "favicon.ico",
+        content_type: "image/x-icon",
+        bytes: include_bytes!("../static/favicon.ico"),
+    },
+    Asset {
+        name: "site.webmanifest",
+        content_type: "application/manifest+json",
+        bytes: include_bytes!("../static/site.webmanifest"),
+    },
     Asset {
         name: "geist-latin.woff2",
         content_type: "font/woff2",
@@ -122,6 +159,12 @@ pub async fn asset(Path(name): Path<String>) -> Response {
     }
 }
 
+/// Root-level files that clients request without reading the page (old browsers ask for
+/// `/favicon.ico`, iOS for `/apple-touch-icon.png` and its `-precomposed` twin).
 pub async fn favicon() -> Response {
-    serve(find("app-icon.svg").expect("icon is embedded"))
+    serve(find("favicon.ico").expect("favicon is embedded"))
+}
+
+pub async fn apple_touch_icon() -> Response {
+    serve(find("apple-touch-icon.png").expect("touch icon is embedded"))
 }

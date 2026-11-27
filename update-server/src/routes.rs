@@ -24,7 +24,7 @@ const UPDATE_ARCH: &str = "x86_64";
 const NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
 const CSP: HeaderValue = HeaderValue::from_static(
     "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; \
-     font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; \
+     font-src 'self'; manifest-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; \
      frame-ancestors 'none'",
 );
 
@@ -41,6 +41,11 @@ pub fn router(state: SharedState) -> Router {
         .route("/releases/{version}/{file}", get(release_file))
         .route("/assets/{name}", get(assets::asset))
         .route("/favicon.ico", get(assets::favicon))
+        .route("/apple-touch-icon.png", get(assets::apple_touch_icon))
+        .route(
+            "/apple-touch-icon-precomposed.png",
+            get(assets::apple_touch_icon),
+        )
         .fallback(fallback)
         .layer(middleware::map_response(common_headers))
         .with_state(state)
@@ -933,6 +938,79 @@ mod tests {
         );
     }
 
+    /// Width and height from a PNG's IHDR chunk.
+    fn png_size(b: &[u8]) -> (u32, u32) {
+        assert_eq!(&b[..8], b"\x89PNG\r\n\x1a\n");
+        let be = |i: usize| u32::from_be_bytes(b[i..i + 4].try_into().unwrap());
+        (be(16), be(20))
+    }
+
+    #[tokio::test]
+    async fn social_card_and_icons() {
+        let tmp = tempfile::tempdir().unwrap();
+        let b = get_req(app(tmp.path(), PUB), "/").await.body;
+        let og = format!(
+            "https://ups.umami-creative.app{}",
+            assets::url("og-image.png")
+        );
+        assert!(
+            b.contains(&format!(r#"<meta property="og:image" content="{og}">"#)),
+            "{b}"
+        );
+        assert!(b.contains(&format!(r#"<meta name="twitter:image" content="{og}">"#)));
+        assert!(b.contains(r#"<meta name="twitter:card" content="summary_large_image">"#));
+        assert!(b.contains(r#"<meta property="og:image:width" content="1200">"#));
+        assert!(b.contains(r#"<meta property="og:image:height" content="630">"#));
+        assert!(b.contains(r#"<meta property="og:image:alt" content="Unity Project Sync: "#));
+        assert!(
+            b.contains(r#"<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png?v="#)
+        );
+        assert!(b.contains(r#"<link rel="manifest" href="/assets/site.webmanifest?v="#));
+        // The manifest must be allowed by the CSP.
+        let g = get_req(app(tmp.path(), PUB), "/").await;
+        assert!(hdr(&g, "content-security-policy").contains("manifest-src 'self'"));
+
+        for (name, size) in [
+            ("og-image.png", (1200, 630)),
+            ("apple-touch-icon.png", (180, 180)),
+            ("icon-192.png", (192, 192)),
+            ("icon-512.png", (512, 512)),
+            ("icon-maskable-512.png", (512, 512)),
+        ] {
+            assert_eq!(png_size(assets::find(name).unwrap().bytes), size, "{name}");
+        }
+
+        // favicon.ico: a valid icon directory whose PNG entries have the sizes it declares.
+        let ico = assets::find("favicon.ico").unwrap().bytes;
+        let u16le = |i: usize| u16::from_le_bytes(ico[i..i + 2].try_into().unwrap());
+        let u32le = |i: usize| u32::from_le_bytes(ico[i..i + 4].try_into().unwrap()) as usize;
+        assert_eq!((u16le(0), u16le(2)), (0, 1));
+        let sizes: Vec<u32> = (0..u16le(4) as usize)
+            .map(|i| {
+                let e = 6 + 16 * i;
+                let (len, off) = (u32le(e + 8), u32le(e + 12));
+                let (w, h) = png_size(&ico[off..off + len]);
+                assert_eq!((w, h), (ico[e] as u32, ico[e + 1] as u32));
+                w
+            })
+            .collect();
+        assert_eq!(sizes, [16, 32, 48]);
+
+        // Every icon the manifest lists is served.
+        let manifest: serde_json::Value =
+            serde_json::from_slice(assets::find("site.webmanifest").unwrap().bytes).unwrap();
+        for icon in manifest["icons"].as_array().unwrap() {
+            let src = icon["src"].as_str().unwrap();
+            let g = get_req(app(tmp.path(), PUB), src).await;
+            assert_eq!(g.status, StatusCode::OK, "{src}");
+            assert_eq!(
+                hdr(&g, "content-type"),
+                icon["type"].as_str().unwrap(),
+                "{src}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn not_found_page() {
         let tmp = tempfile::tempdir().unwrap();
@@ -948,7 +1026,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for (uri, ct) in [
             ("/assets/app-icon.svg", "image/svg+xml"),
-            ("/favicon.ico", "image/svg+xml"),
+            ("/favicon.ico", "image/x-icon"),
+            ("/apple-touch-icon.png", "image/png"),
+            ("/apple-touch-icon-precomposed.png", "image/png"),
+            ("/assets/og-image.png", "image/png"),
+            ("/assets/icon-192.png", "image/png"),
+            ("/assets/icon-512.png", "image/png"),
+            ("/assets/icon-maskable-512.png", "image/png"),
+            ("/assets/site.webmanifest", "application/manifest+json"),
             ("/assets/geist-latin.woff2", "font/woff2"),
             ("/assets/geist-latin-ext.woff2", "font/woff2"),
             ("/assets/site.css", "text/css; charset=utf-8"),
